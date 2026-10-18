@@ -90,15 +90,23 @@ fn snapshot(current: &Shared) -> Snapshot {
         .collect();
     Snapshot {
         health: h,
-        headline: format!(
-            "Token Share: {}{}",
-            label(h),
-            if s.config.share_with_peers {
-                ""
-            } else {
-                " (not sharing)"
+        headline: {
+            let mut notes = vec![];
+            if s.config.masquerade {
+                notes.push("masquerading");
             }
-        ),
+            if s.config.ollama_hosts.is_empty() {
+                notes.push("client only");
+            } else if !s.config.share_with_peers {
+                notes.push("not sharing");
+            }
+            let notes = if notes.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", notes.join(", "))
+            };
+            format!("Token Share: {}{notes}", label(h))
+        },
         pool: format!(
             "Requests: {} local of {}, {} forwarded",
             s.pool.in_use(),
@@ -285,7 +293,7 @@ pub fn run() {
                         settings_window = None;
                         set_regular_app(target, false);
                     }
-                    Ok(Message::Save { form }) => {
+                    Ok(Message::Save { form, force }) => {
                         let result = save_and_restart(
                             &form,
                             &config_path,
@@ -293,13 +301,18 @@ pub fn run() {
                             &current,
                             &rt,
                             &start,
+                            force,
                         );
                         match result {
                             Ok(()) => {
                                 settings_window = None;
                                 set_regular_app(target, false);
                             }
-                            Err(errors) => show_errors(w, &errors),
+                            Err(SaveError::Invalid(errors)) => show_errors(w, &errors),
+                            Err(SaveError::Warning(text)) => {
+                                let json = serde_json::to_string(&text).expect("string serializes");
+                                let _ = w.webview.evaluate_script(&format!("showWarning({json})"));
+                            }
                         }
                     }
                     Err(e) => tracing::warn!(error = %e, "bad message from settings page"),
@@ -331,8 +344,14 @@ pub fn run() {
     });
 }
 
+enum SaveError {
+    /// Problems with the values; fix them and save again.
+    Invalid(Vec<String>),
+    /// A heads-up that does not block: saving again (`force`) goes ahead.
+    Warning(String),
+}
+
 /// Validate, write the config, and restart the delegate with it.
-/// Errors are returned as messages for the form.
 fn save_and_restart(
     form: &Form,
     config_path: &Option<PathBuf>,
@@ -340,13 +359,32 @@ fn save_and_restart(
     current: &Shared,
     rt: &tokio::runtime::Runtime,
     start: &dyn Fn(&tokio::runtime::Runtime) -> Result<Running, String>,
-) -> Result<(), Vec<String>> {
+    force: bool,
+) -> Result<(), SaveError> {
+    let invalid = |msg: String| SaveError::Invalid(vec![msg]);
     let path = config_path
         .as_ref()
-        .ok_or_else(|| vec!["no config location".to_string()])?;
-    let base = Config::load(path).map_err(|e| vec![format!("{e:#}")])?;
-    let config = apply(form, &base)?;
-    config.save(path).map_err(|e| vec![format!("{e:#}")])?;
+        .ok_or_else(|| invalid("no config location".into()))?;
+    let base = Config::load(path).map_err(|e| invalid(format!("{e:#}")))?;
+    let config = apply(form, &base).map_err(SaveError::Invalid)?;
+
+    // Warn if the port we are about to take is busy. Our own current port does
+    // not count: it is freed by the restart.
+    let port = config.listen_port();
+    let ours = running.as_ref().map(|r| r.addr.port());
+    if !force && ours != Some(port) && tokenshare_core::config::port_in_use(port) {
+        let who = if port == tokenshare_core::config::OLLAMA_PORT {
+            "probably ollama itself"
+        } else {
+            "by another program"
+        };
+        return Err(SaveError::Warning(format!(
+            "Port {port} is already in use ({who}). The delegate cannot start until it is \
+             free: stop that program first, or press Save Anyway to save the setting."
+        )));
+    }
+
+    config.save(path).map_err(|e| invalid(format!("{e:#}")))?;
     tracing::info!("settings saved, restarting delegate");
 
     if let Some(r) = running.take() {
@@ -366,9 +404,9 @@ fn save_and_restart(
         Err(e) => {
             tracing::error!(error = %e, "delegate failed to restart");
             current.lock().unwrap().error = Some(e.clone());
-            Err(vec![format!(
+            Err(invalid(format!(
                 "Saved, but the delegate could not start: {e}"
-            )])
+            )))
         }
     }
 }

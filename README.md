@@ -61,6 +61,7 @@ A TOML file; every key is optional. Command-line flags override it.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `port` | `11343` | Port for ollama and coordination traffic |
+| `masquerade` | `false` | Listen on 11434, ollama's own port, instead of `port` (see below) |
 | `fc` | none | First-contact delegate URL |
 | `advertise_url` | learned | How peers reach this delegate (learned from the first delegate it joins) |
 | `ollama_hosts` | `["http://localhost:11434"]` | Ollama instances reachable from this machine. Optional: `[]` makes a client-only delegate |
@@ -97,7 +98,7 @@ cargo run --release -p tokenshare -- --fc http://192.168.2.3:11343
 ```
 
 Flags: `--config`, `--port`, `--fc`, `--advertise-url`, `--ollama-host`
-(repeatable), `--client-only`, `--pool-size`. Set `RUST_LOG` to change the log level. Logs list
+(repeatable), `--client-only`, `--masquerade`, `--pool-size`. Set `RUST_LOG` to change the log level. Logs list
 metrics only (method, path, model, target, status, time to first byte), never
 request content. On Linux, `packaging/linux/tokenshare.service` is a systemd
 user unit.
@@ -116,6 +117,18 @@ while any request is in flight (served here or forwarded), and a red **cross**
 or failed to start. The menu
 shows state, pool usage and the delegate list. Quit waits up to 5 seconds for
 in-flight requests.
+
+**Masquerade.** With `masquerade = true` (the *Masquerade as ollama* checkbox, or
+`--masquerade`) the delegate listens on **11434**, ollama's default port, so
+apps already pointed at ollama use the pool with no changes. `port` is kept for
+when you turn it off. This is the same port a local ollama uses, so you cannot
+run both on it: start ollama on another port (for example
+`OLLAMA_HOST=127.0.0.1:11435`) and list that address as the ollama host. The
+delegate refuses to start if an ollama host points back at itself. If 11434 is
+already taken, Settings warns before saving (you can *Save Anyway*), and
+starting fails with "port 11434 is already in use". The check also catches
+ollama listening on 127.0.0.1 only, which on macOS would otherwise quietly
+shadow the delegate for local clients. The menu shows "(masquerading)".
 
 **Client only.** Ollama hosts are optional. With none (`ollama_hosts = []`, the
 `--client-only` flag, or an empty field in Settings) the delegate serves nothing

@@ -18,6 +18,9 @@ pub fn page(form: &Form) -> String {
 pub enum Message {
     Save {
         form: Form,
+        /// Set after a warning (such as a busy port) to save regardless.
+        #[serde(default)]
+        force: bool,
     },
     Cancel,
     /// Put `text` on the system clipboard (Cmd+C / Cmd+X in a field).
@@ -58,11 +61,11 @@ mod tests {
     #[test]
     fn messages_parse() {
         let save: Message = serde_json::from_str(
-            r#"{"cmd":"save","form":{"fc":"","advertise_url":"","ollama_hosts":"x","port":"1","pool_size":"2","share_with_peers":false}}"#,
+            r#"{"cmd":"save","form":{"fc":"","advertise_url":"","ollama_hosts":"x","port":"1","pool_size":"2","share_with_peers":false,"masquerade":true},"force":true}"#,
         )
         .unwrap();
         assert!(
-            matches!(save, Message::Save { form } if form.pool_size == "2" && !form.share_with_peers)
+            matches!(save, Message::Save { form, force } if form.pool_size == "2" && !form.share_with_peers && form.masquerade && force)
         );
         assert!(matches!(
             serde_json::from_str::<Message>(r#"{"cmd":"cancel"}"#).unwrap(),

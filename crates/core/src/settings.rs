@@ -19,6 +19,8 @@ pub struct Form {
     pub pool_size: String,
     /// Let other delegates use this machine's ollama.
     pub share_with_peers: bool,
+    /// Listen on ollama's port (11434) so ollama clients work unchanged.
+    pub masquerade: bool,
 }
 
 impl Form {
@@ -30,6 +32,7 @@ impl Form {
             port: c.port.to_string(),
             pool_size: c.pool_size.to_string(),
             share_with_peers: c.share_with_peers,
+            masquerade: c.masquerade,
         }
     }
 }
@@ -88,6 +91,14 @@ pub fn apply(form: &Form, base: &Config) -> Result<Config, Vec<String>> {
     }
 
     c.share_with_peers = form.share_with_peers;
+    c.masquerade = form.masquerade;
+    for h in c.self_loop_hosts() {
+        errors.push(format!(
+            "Ollama host {h} would be this delegate itself (it listens on port {}). \
+             Run ollama on another port, e.g. OLLAMA_HOST=127.0.0.1:11435, and use that address here",
+            c.listen_port()
+        ));
+    }
 
     if errors.is_empty() {
         Ok(c)
@@ -144,6 +155,48 @@ mod tests {
         let c = apply(&f, &Config::default()).unwrap();
         assert!(!c.share_with_peers);
         assert!(!Form::from_config(&c).share_with_peers);
+    }
+
+    #[test]
+    fn masquerade_is_saved_and_the_normal_port_is_kept() {
+        let f = Form {
+            masquerade: true,
+            port: "12000".into(),
+            ollama_hosts: "http://localhost:11435".into(),
+            ..form()
+        };
+        let c = apply(&f, &Config::default()).unwrap();
+        assert!(c.masquerade);
+        assert_eq!((c.port, c.listen_port()), (12000, 11434));
+        assert!(Form::from_config(&c).masquerade);
+    }
+
+    #[test]
+    fn masquerade_with_a_local_ollama_on_11434_is_rejected() {
+        let f = Form {
+            masquerade: true,
+            ..form() // default host is http://localhost:11434
+        };
+        let errors = apply(&f, &Config::default()).unwrap_err();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("itself"), "{errors:?}");
+        // Same host is fine when masquerade is off, or when it is remote.
+        assert!(apply(
+            &Form {
+                masquerade: false,
+                ..f.clone()
+            },
+            &Config::default()
+        )
+        .is_ok());
+        assert!(apply(
+            &Form {
+                ollama_hosts: "http://gpu:11434".into(),
+                ..f
+            },
+            &Config::default()
+        )
+        .is_ok());
     }
 
     #[test]

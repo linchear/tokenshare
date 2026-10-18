@@ -173,7 +173,7 @@ pub async fn join_via(s: &AppState, url: &str) -> Result<()> {
     let req = JoinRequest {
         id: s.id.clone(),
         url: (!me.url.is_empty()).then_some(me.url),
-        port: s.config.port,
+        port: s.config.listen_port(),
         models: me.models,
     };
     let resp: TableResponse = s

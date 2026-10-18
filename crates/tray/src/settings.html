@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <title>Token Share Settings</title>
 <style>
-  :root { color-scheme: light dark; --bg:#fff; --fg:#1d1d1f; --muted:#6e6e73; --line:#d2d2d7; --field:#fff; --accent:#0a6cff; --err:#c4251c; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#262628; --fg:#f5f5f7; --muted:#a1a1a6; --line:#48484a; --field:#1c1c1e; --accent:#3d8bff; --err:#ff6961; } }
+  :root { color-scheme: light dark; --bg:#fff; --fg:#1d1d1f; --muted:#6e6e73; --line:#d2d2d7; --field:#fff; --accent:#0a6cff; --err:#c4251c; --warn:#a05a00; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#262628; --fg:#f5f5f7; --muted:#a1a1a6; --line:#48484a; --field:#1c1c1e; --accent:#3d8bff; --err:#ff6961; --warn:#ffb340; } }
   * { box-sizing: border-box; }
   body { margin:0; padding:20px 22px; background:var(--bg); color:var(--fg); font:13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
   h1 { font-size:15px; margin:0 0 14px; }
@@ -20,6 +20,8 @@
   details { margin-top:14px; } summary { cursor:pointer; color:var(--muted); }
   #errors { display:none; margin-top:14px; padding:8px 10px; border:1px solid var(--err); border-radius:6px; color:var(--err); }
   #errors ul { margin:0; padding-left:18px; }
+  #errors.warn { border-color:var(--warn); color:var(--warn); }
+  .callout { display:none; margin-top:8px; padding:8px 10px; border:1px solid var(--warn); border-radius:6px; color:var(--warn); font-size:12px; line-height:1.4; }
   .actions { display:flex; justify-content:flex-end; gap:8px; margin-top:18px; }
   button { font:inherit; padding:6px 14px; border-radius:6px; border:1px solid var(--line); background:var(--field); color:var(--fg); }
   button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
@@ -45,6 +47,10 @@
     <div><label for="port">Listen port</label><input id="port" inputmode="numeric"></div>
   </div>
 
+  <label class="check"><input type="checkbox" id="masq"> Masquerade as ollama (listen on port 11434)</label>
+  <div class="hint">Lets apps that already talk to ollama's default port use the pool without any change.</div>
+  <div id="masq-warn" class="callout"><b>This is ollama's own port.</b> Do not run a local ollama on 11434 at the same time: start it on another port (for example <code>OLLAMA_HOST=127.0.0.1:11435</code>) and list that address under Ollama hosts above.</div>
+
   <details>
     <summary>Advanced</summary>
     <label for="adv">Advertise URL</label>
@@ -64,23 +70,47 @@
   const init = /*INITIAL*/null;
   $('fc').value = init.fc; $('hosts').value = init.ollama_hosts; $('pool').value = init.pool_size;
   $('port').value = init.port; $('share').checked = init.share_with_peers; $('adv').value = init.advertise_url;
+  $('masq').checked = init.masquerade;
+  let normalPort = init.port;   // the port used when not masquerading
+  let force = false;            // set after a warning, so the next Save goes through
   if (init.advertise_url) $('adv').closest('details').open = true;
   // Ask the host to fit the window to the content so it never needs a scrollbar.
   function fit() { send({ cmd: 'resize', height: Math.ceil(document.body.scrollHeight) }); }
   function send(m) { window.ipc.postMessage(JSON.stringify(m)); }
-  function showErrors(list) {
+  function showMessages(list, warning) {
     const box = $('errors'), ul = box.querySelector('ul');
     ul.replaceChildren(...list.map(t => Object.assign(document.createElement('li'), { textContent: t })));
+    box.className = warning ? 'warn' : '';
     box.style.display = list.length ? 'block' : 'none';
-    $('save').disabled = false; $('save').textContent = 'Save & Restart';
+    $('save').disabled = false;
+    $('save').textContent = warning ? 'Save Anyway' : 'Save & Restart';
+    force = !!warning;
     fit();
   }
+  function showErrors(list) { showMessages(list, false); }
+  // A warning does not block: the next Save goes through anyway.
+  function showWarning(text) { showMessages([text], true); }
+  function resetForce() {
+    if (!force) return;
+    force = false; $('errors').style.display = 'none'; $('save').textContent = 'Save & Restart'; fit();
+  }
+  function syncMasq() {
+    const on = $('masq').checked;
+    $('port').disabled = on;
+    $('port').value = on ? '11434' : normalPort;
+    $('masq-warn').style.display = on ? 'block' : 'none';
+    fit();
+  }
+  $('port').addEventListener('input', () => { normalPort = $('port').value; });
+  $('masq').addEventListener('change', () => { syncMasq(); resetForce(); });
+  for (const id of ['port', 'hosts']) $(id).addEventListener('input', resetForce);
   $('cancel').onclick = () => send({ cmd: 'cancel' });
   $('f').onsubmit = e => {
     e.preventDefault();
     $('save').disabled = true; $('save').textContent = 'Restarting…';
-    send({ cmd: 'save', form: { fc: $('fc').value, advertise_url: $('adv').value,
-      ollama_hosts: $('hosts').value, port: $('port').value, pool_size: $('pool').value, share_with_peers: $('share').checked } });
+    send({ cmd: 'save', force, form: { fc: $('fc').value, advertise_url: $('adv').value,
+      ollama_hosts: $('hosts').value, port: normalPort, pool_size: $('pool').value,
+      share_with_peers: $('share').checked, masquerade: $('masq').checked } });
   };
   // WKWebView in an app without a working Edit menu ignores Cmd+A/C/X/V, so on
   // macOS we do them ourselves. Copy and paste go through the host's clipboard.
@@ -115,6 +145,7 @@
   }
   $('hosts').addEventListener('input', syncShare);
   syncShare();
+  syncMasq();
   $('fc').focus();
 </script>
 </body>

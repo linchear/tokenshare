@@ -50,6 +50,8 @@ pub fn status_json(s: &AppState) -> Value {
         "state": health(s),
         "draining": s.is_draining(),
         "sharing": s.config.share_with_peers,
+        "masquerade": s.config.masquerade,
+        "port": s.config.listen_port(),
         "pool": { "size": s.pool.size(), "in_use": s.pool.in_use(), "forwarding": s.pool.forwarding() },
         "ollama": hosts,
         "delegates": s.delegates.shared_entries(),

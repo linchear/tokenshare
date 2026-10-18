@@ -24,6 +24,9 @@ struct Args {
     /// Ollama host; repeat for several.
     #[arg(long = "ollama-host")]
     ollama_hosts: Vec<String>,
+    /// Listen on port 11434 (ollama's own) so ollama clients work unchanged.
+    #[arg(long)]
+    masquerade: bool,
     /// Use no local ollama; only borrow other delegates' (overrides --ollama-host).
     #[arg(long)]
     client_only: bool,
@@ -53,6 +56,9 @@ async fn main() -> Result<()> {
     }
     if args.advertise_url.is_some() {
         config.advertise_url = args.advertise_url;
+    }
+    if args.masquerade {
+        config.masquerade = true;
     }
     if args.client_only {
         config.ollama_hosts.clear();

@@ -105,3 +105,49 @@ async fn requests_still_running_after_the_grace_period_are_cut_off() {
         "stream ended cleanly after {chunks} chunks instead of erroring"
     );
 }
+
+fn temp_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("ts-start-{}", common::uuid_like()))
+}
+
+#[tokio::test]
+async fn starting_on_a_busy_port_fails_with_a_clear_message() {
+    // Loopback-only, like ollama: binding the wildcard would "succeed" on macOS.
+    let busy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = busy.local_addr().unwrap().port();
+    let config = Config {
+        port,
+        ollama_hosts: vec![],
+        ..Config::default()
+    };
+    let err = daemon::start(config, temp_dir())
+        .await
+        .err()
+        .expect("must fail");
+    assert!(
+        err.to_string()
+            .contains(&format!("port {port} is already in use")),
+        "{err:#}"
+    );
+}
+
+#[tokio::test]
+async fn an_ollama_host_that_is_the_delegate_itself_is_refused() {
+    let free = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let config = Config {
+        port: free,
+        ollama_hosts: vec![format!("http://localhost:{free}")],
+        ..Config::default()
+    };
+    let err = daemon::start(config, temp_dir())
+        .await
+        .err()
+        .expect("must fail");
+    assert!(
+        err.to_string().contains("is this delegate itself"),
+        "{err:#}"
+    );
+}

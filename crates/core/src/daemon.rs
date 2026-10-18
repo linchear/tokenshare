@@ -27,11 +27,33 @@ pub struct Running {
 /// Bind the port and start serving. Fails if the port is taken.
 pub async fn start(config: Config, data_dir: PathBuf) -> Result<Running> {
     let id = load_or_create_id(&data_dir)?;
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", config.port))
+    let port = config.listen_port();
+    if let Some(h) = config.self_loop_hosts().first() {
+        anyhow::bail!(
+            "ollama host {h} is this delegate itself (it listens on port {port}); \
+             run ollama on another port and point the host there"
+        );
+    }
+    if crate::config::port_in_use(port) {
+        let hint = if port == crate::config::OLLAMA_PORT {
+            " (is ollama running? it uses this port by default)"
+        } else {
+            ""
+        };
+        anyhow::bail!("port {port} is already in use{hint}");
+    }
+    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
         .await
-        .with_context(|| format!("binding port {}", config.port))?;
+        .with_context(|| format!("binding port {port}"))?;
     let addr = listener.local_addr()?;
-    info!(id, port = config.port, hosts = ?config.ollama_hosts, pool = config.pool_size, "delegate starting");
+    info!(
+        id,
+        port = addr.port(),
+        masquerade = config.masquerade,
+        hosts = ?config.ollama_hosts,
+        pool = config.pool_size,
+        "delegate starting"
+    );
 
     let state = AppState::new(id, config, Some(data_dir));
     state.refresh_local().await;

@@ -5,6 +5,8 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_PORT: u16 = 11343;
+/// The port ollama itself uses by default.
+pub const OLLAMA_PORT: u16 = 11434;
 pub const DEFAULT_OLLAMA_HOST: &str = "http://localhost:11434";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -12,6 +14,9 @@ pub const DEFAULT_OLLAMA_HOST: &str = "http://localhost:11434";
 pub struct Config {
     /// Port for both ollama and coordination traffic.
     pub port: u16,
+    /// Listen on ollama's own port (11434) instead of `port`, so existing
+    /// ollama clients work unchanged. Conflicts with a local ollama on that port.
+    pub masquerade: bool,
     /// First-contact delegate, e.g. `http://192.168.2.3:11343`.
     pub fc: Option<String>,
     /// How peers reach this delegate. If unset, it is learned from the first
@@ -43,6 +48,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             port: DEFAULT_PORT,
+            masquerade: false,
             fc: None,
             advertise_url: None,
             ollama_hosts: vec![DEFAULT_OLLAMA_HOST.to_string()],
@@ -59,6 +65,38 @@ impl Default for Config {
 }
 
 impl Config {
+    /// The port we actually listen on.
+    pub fn listen_port(&self) -> u16 {
+        if self.masquerade {
+            OLLAMA_PORT
+        } else {
+            self.port
+        }
+    }
+
+    /// Configured ollama hosts that are really this delegate (a loopback address
+    /// on our own listen port), which would make requests loop back into us.
+    pub fn self_loop_hosts(&self) -> Vec<String> {
+        let port = self.listen_port();
+        self.ollama_hosts
+            .iter()
+            .map(|h| crate::ollama::normalize_host(h))
+            .filter(|h| {
+                let rest = h.split("://").nth(1).unwrap_or("");
+                let authority = rest.split('/').next().unwrap_or("");
+                let (host, p) = match authority.rsplit_once(':') {
+                    Some((host, p)) if !p.contains(']') => (host, p.parse::<u16>().ok()),
+                    _ => (authority, None),
+                };
+                let loopback = matches!(
+                    host.trim_matches(|c| c == '[' || c == ']'),
+                    "localhost" | "127.0.0.1" | "::1" | "0.0.0.0"
+                );
+                loopback && p == Some(port)
+            })
+            .collect()
+    }
+
     /// Load from `path`; a missing file yields defaults.
     pub fn load(path: &Path) -> Result<Self> {
         match std::fs::read_to_string(path) {
@@ -114,6 +152,25 @@ pub fn load_or_create_id(dir: &Path) -> Result<String> {
     Ok(id)
 }
 
+/// Whether something is already listening on `port`. Checks loopback by
+/// connecting as well as binding: on macOS and BSD, binding the wildcard
+/// address succeeds even while another program holds 127.0.0.1:port (ollama
+/// does), and that program would silently win all local connections.
+pub fn port_in_use(port: u16) -> bool {
+    use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
+    use std::time::Duration;
+    if port == 0 {
+        return false;
+    }
+    let reachable = [
+        SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+        SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
+    ]
+    .iter()
+    .any(|a| TcpStream::connect_timeout(a, Duration::from_millis(300)).is_ok());
+    reachable || TcpListener::bind(("0.0.0.0", port)).is_err()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,6 +188,61 @@ mod tests {
         assert_eq!(c.pool_size, 5);
         assert_eq!(c.fc.as_deref(), Some("http://a:1"));
         assert_eq!(c.port, 11343);
+    }
+
+    #[test]
+    fn masquerade_listens_on_ollamas_port() {
+        let mut c = Config {
+            port: 12000,
+            ..Config::default()
+        };
+        assert_eq!(c.listen_port(), 12000);
+        c.masquerade = true;
+        assert_eq!(c.listen_port(), 11434);
+        assert_eq!(
+            c.port, 12000,
+            "the normal port is kept for when masquerade is off"
+        );
+    }
+
+    #[test]
+    fn hosts_pointing_back_at_us_are_found() {
+        let c = Config {
+            masquerade: true,
+            ollama_hosts: vec![
+                "localhost:11434".into(),
+                "http://127.0.0.1:11434/".into(),
+                "http://[::1]:11434".into(),
+                "http://gpu-box:11434".into(),
+                "http://localhost:11435".into(),
+            ],
+            ..Config::default()
+        };
+        assert_eq!(
+            c.self_loop_hosts(),
+            vec![
+                "http://localhost:11434",
+                "http://127.0.0.1:11434",
+                "http://[::1]:11434"
+            ]
+        );
+        // Without masquerade we listen on 11343, so 11434 is a real ollama.
+        assert!(Config {
+            masquerade: false,
+            ..c
+        }
+        .self_loop_hosts()
+        .is_empty());
+    }
+
+    #[test]
+    fn port_in_use_sees_loopback_only_listeners() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        assert!(port_in_use(port));
+        drop(l);
+        assert!(!port_in_use(port));
+        assert!(!port_in_use(0));
     }
 
     #[test]
