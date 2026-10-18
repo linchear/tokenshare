@@ -67,7 +67,7 @@ A TOML file; every key is optional. Command-line flags override it.
 | `advertise_url` | learned | How peers reach this delegate (learned from the first delegate it joins) |
 | `ollama_hosts` | `["http://localhost:11434"]` | Ollama instances reachable from this machine. Optional: `[]` makes a client-only delegate |
 | `pool_size` | `3` | Max concurrent requests to ollama |
-| `share_with_peers` | `true` | Let other delegates use this machine's ollama (see below) |
+| `share_with_peers` | `true` | Let other delegates use this machine's ollama (see below). Always off while masquerading |
 | `poll_interval_secs` | `10` | How often to refresh local models |
 | `rejoin_retry_secs` | `300` | Wait before retrying when no delegate answered |
 | `keepalive_interval_secs` | `30` | Keepalive period |

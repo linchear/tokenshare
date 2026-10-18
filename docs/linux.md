@@ -235,6 +235,7 @@ or `tokenshare --client-only`.
 
 Set `share_with_peers = false` so other machines no longer see your models or
 send you requests. You still use your own ollama and the rest of the pool.
+While `masquerade` is on this is always the case, whatever `share_with_peers` says.
 
 ## Check that it works
 
@@ -251,7 +252,8 @@ The `state` field says what the delegate sees:
 | `no-models` | no model is available anywhere, but other delegates are online |
 | `down` | no model is available and no other delegate is online |
 
-Other useful fields: `pool` (slots in use and forwarded requests), `ollama`
+Other useful fields: `ports` (every port it listens on), `sharing` (whether
+other delegates may use this machine's ollama), `pool` (slots in use and forwarded requests), `ollama`
 (this machine's ollama hosts and their models) and `delegates` (every known
 delegate with its URL, status, models and `last_seen`). `draining` is true during
 shutdown.

@@ -143,6 +143,9 @@ Default 3.
 .B share_with_peers
 When false, other delegates see this machine as serving nothing and their
 forwarded requests are refused, while local use is unchanged.
+Always off while
+.B masquerade
+is on.
 Default true.
 .TP
 .B poll_interval_secs
@@ -200,6 +203,10 @@ returns JSON describing the delegate: its
 .IR id ,
 .IR state ,
 .IR draining ,
+.I sharing
+(whether other delegates may use this machine's ollama),
+.I ports
+(every port it listens on),
 .IR pool ,
 the local
 .I ollama
