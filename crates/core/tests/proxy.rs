@@ -1,64 +1,24 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::body::Body;
-use axum::extract::Json;
-use axum::routing::{get, post};
-use axum::Router;
-use futures_util::stream;
 use serde_json::{json, Value};
-use tokenshare_core::{router, AppState, Config};
-use tokio::net::TcpListener;
 
-async fn serve(app: Router) -> String {
-    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = l.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
-    format!("http://{addr}")
-}
+mod common;
+use common::{node, NodeOpts};
 
-/// A fake ollama: serves `gemma2:latest`; `/api/chat` streams 3 NDJSON lines.
-async fn mock_ollama(chunk_delay_ms: u64) -> String {
-    let app = Router::new()
-        .route(
-            "/api/tags",
-            get(|| async { Json(json!({"models": [{"name": "gemma2:latest", "size": 1}]})) }),
-        )
-        .route(
-            "/api/chat",
-            post(move |Json(req): Json<Value>| async move {
-                let model = req["model"].as_str().unwrap().to_string();
-                let s = stream::unfold(0, move |i| {
-                    let model = model.clone();
-                    async move {
-                        if i == 3 {
-                            return None;
-                        }
-                        tokio::time::sleep(Duration::from_millis(chunk_delay_ms)).await;
-                        let line =
-                            format!("{}\n", json!({"model": model, "chunk": i, "done": i == 2}));
-                        Some((Ok::<_, std::io::Error>(line), i + 1))
-                    }
-                });
-                Body::from_stream(s)
-            }),
-        )
-        .route(
-            "/api/version",
-            get(|| async { Json(json!({"version": "mock"})) }),
-        );
-    serve(app).await
-}
-
-async fn delegate(ollama: &str, pool_size: usize) -> (String, Arc<AppState>) {
-    let config = Config {
-        ollama_hosts: vec![ollama.to_string()],
-        pool_size,
-        ..Config::default()
-    };
-    let state = AppState::new("test-id".into(), config);
-    state.table.refresh(&state.client).await;
-    (serve(router(state.clone())).await, state)
+async fn delegate(
+    models: &[&str],
+    pool: usize,
+    chunk_delay_ms: u64,
+) -> (String, Arc<tokenshare_core::AppState>) {
+    let n = node(NodeOpts {
+        models,
+        pool,
+        chunk_delay_ms,
+        ..Default::default()
+    })
+    .await;
+    (n.url, n.state)
 }
 
 fn chat(model: &str) -> Value {
@@ -67,8 +27,7 @@ fn chat(model: &str) -> Value {
 
 #[tokio::test]
 async fn proxies_and_streams_response() {
-    let ollama = mock_ollama(0).await;
-    let (url, _) = delegate(&ollama, 3).await;
+    let (url, _) = delegate(&["gemma2:latest"], 3, 0).await;
     let resp = reqwest::Client::new()
         .post(format!("{url}/api/chat"))
         .json(&chat("gemma2"))
@@ -87,8 +46,7 @@ async fn proxies_and_streams_response() {
 
 #[tokio::test]
 async fn unknown_model_is_404() {
-    let ollama = mock_ollama(0).await;
-    let (url, _) = delegate(&ollama, 3).await;
+    let (url, _) = delegate(&["gemma2:latest"], 3, 0).await;
     let resp = reqwest::Client::new()
         .post(format!("{url}/api/chat"))
         .json(&chat("nope"))
@@ -100,8 +58,7 @@ async fn unknown_model_is_404() {
 
 #[tokio::test]
 async fn missing_model_is_400() {
-    let ollama = mock_ollama(0).await;
-    let (url, _) = delegate(&ollama, 3).await;
+    let (url, _) = delegate(&["gemma2:latest"], 3, 0).await;
     let resp = reqwest::Client::new()
         .post(format!("{url}/api/chat"))
         .json(&json!({"messages": []}))
@@ -113,8 +70,7 @@ async fn missing_model_is_400() {
 
 #[tokio::test]
 async fn tags_lists_local_models() {
-    let ollama = mock_ollama(0).await;
-    let (url, _) = delegate(&ollama, 3).await;
+    let (url, _) = delegate(&["gemma2:latest"], 3, 0).await;
     let body: Value = reqwest::get(format!("{url}/api/tags"))
         .await
         .unwrap()
@@ -126,8 +82,7 @@ async fn tags_lists_local_models() {
 
 #[tokio::test]
 async fn non_inference_paths_pass_through() {
-    let ollama = mock_ollama(0).await;
-    let (url, _) = delegate(&ollama, 3).await;
+    let (url, _) = delegate(&["gemma2:latest"], 3, 0).await;
     let body: Value = reqwest::get(format!("{url}/api/version"))
         .await
         .unwrap()
@@ -139,8 +94,7 @@ async fn non_inference_paths_pass_through() {
 
 #[tokio::test]
 async fn full_pool_returns_503_and_recovers() {
-    let ollama = mock_ollama(150).await;
-    let (url, state) = delegate(&ollama, 1).await;
+    let (url, state) = delegate(&["gemma2:latest"], 1, 150).await;
     let client = reqwest::Client::new();
 
     // First request holds the only slot while its body streams.
@@ -181,8 +135,7 @@ async fn full_pool_returns_503_and_recovers() {
 
 #[tokio::test]
 async fn dropped_client_releases_slot() {
-    let ollama = mock_ollama(150).await;
-    let (url, state) = delegate(&ollama, 1).await;
+    let (url, state) = delegate(&["gemma2:latest"], 1, 150).await;
     let resp = reqwest::Client::new()
         .post(format!("{url}/api/chat"))
         .json(&chat("gemma2"))
@@ -201,8 +154,8 @@ async fn dropped_client_releases_slot() {
 }
 
 #[tokio::test]
-async fn ollama_down_means_model_not_found() {
-    let (url, _) = delegate("http://127.0.0.1:1", 3).await;
+async fn no_models_means_not_found() {
+    let (url, _) = delegate(&[], 3, 0).await;
     let resp = reqwest::Client::new()
         .post(format!("{url}/api/chat"))
         .json(&chat("gemma2"))
@@ -214,15 +167,14 @@ async fn ollama_down_means_model_not_found() {
 
 #[tokio::test]
 async fn status_reports_pool() {
-    let ollama = mock_ollama(0).await;
-    let (url, _) = delegate(&ollama, 3).await;
+    let (url, state) = delegate(&["gemma2:latest"], 3, 0).await;
     let body: Value = reqwest::get(format!("{url}/_ts/status"))
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    assert_eq!(body["id"], "test-id");
+    assert_eq!(body["id"], state.id.as_str());
     assert_eq!(body["pool"]["size"], 3);
     assert_eq!(body["ollama"][0]["up"], true);
 }

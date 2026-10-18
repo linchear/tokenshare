@@ -14,12 +14,17 @@ pub struct Config {
     pub port: u16,
     /// First-contact delegate, e.g. `http://192.168.2.3:11343`.
     pub fc: Option<String>,
+    /// How peers reach this delegate. If unset, it is learned from the first
+    /// delegate we join.
+    pub advertise_url: Option<String>,
     /// Ollama instances reachable directly from this machine.
     pub ollama_hosts: Vec<String>,
     /// Max concurrent requests sent to ollama.
     pub pool_size: usize,
     /// How often to refresh the local model list.
     pub poll_interval_secs: u64,
+    /// Wait before trying to rejoin when no known delegate answered.
+    pub rejoin_retry_secs: u64,
 }
 
 impl Default for Config {
@@ -27,9 +32,11 @@ impl Default for Config {
         Self {
             port: DEFAULT_PORT,
             fc: None,
+            advertise_url: None,
             ollama_hosts: vec![DEFAULT_OLLAMA_HOST.to_string()],
             pool_size: 3,
             poll_interval_secs: 10,
+            rejoin_retry_secs: 300,
         }
     }
 }

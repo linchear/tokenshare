@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::Parser;
 use tokenshare_core::config::{default_config_path, default_data_dir, load_or_create_id};
-use tokenshare_core::{poll_local_table, router, AppState, Config};
+use tokenshare_core::mesh::join_loop;
+use tokenshare_core::{poll_local_table, serve, AppState, Config};
 use tracing::info;
 
 #[derive(Parser)]
@@ -18,6 +19,9 @@ struct Args {
     /// First-contact delegate URL.
     #[arg(long)]
     fc: Option<String>,
+    /// URL peers use to reach this delegate (learned automatically if unset).
+    #[arg(long)]
+    advertise_url: Option<String>,
     /// Ollama host; repeat for several.
     #[arg(long = "ollama-host")]
     ollama_hosts: Vec<String>,
@@ -45,6 +49,9 @@ async fn main() -> Result<()> {
     if args.fc.is_some() {
         config.fc = args.fc;
     }
+    if args.advertise_url.is_some() {
+        config.advertise_url = args.advertise_url;
+    }
     if !args.ollama_hosts.is_empty() {
         config.ollama_hosts = args.ollama_hosts;
     }
@@ -60,13 +67,12 @@ async fn main() -> Result<()> {
         .with_context(|| format!("binding port {}", config.port))?;
     info!(id, port = config.port, hosts = ?config.ollama_hosts, pool = config.pool_size, "delegate starting");
 
-    let state = AppState::new(id, config);
-    state.table.refresh(&state.client).await;
+    let state = AppState::new(id, config, Some(data_dir));
+    state.refresh_local().await;
     tokio::spawn(poll_local_table(state.clone()));
+    tokio::spawn(join_loop(state.clone()));
 
-    axum::serve(listener, router(state))
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    serve(listener, state, shutdown_signal()).await?;
     Ok(())
 }
 

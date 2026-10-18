@@ -50,7 +50,7 @@ macOS, Windows, and Linux are all first-class targets. The tray UI is macOS and 
 - Request-metrics logging with no content.
 - Tests against a mock ollama.
 
-### M2: Mesh and routing
+### M2: Mesh and routing (done)
 **Phase 2, Delegate table and join**
 - Table entries: id, url, status, type, models, last_seen. Load, vram, and ram are optional.
 - Stable table hash.
