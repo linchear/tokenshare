@@ -153,9 +153,10 @@ Settings warns before saving (you can *Save Anyway*), and starting fails with
 127.0.0.1 only, which on macOS would otherwise quietly shadow the delegate for
 local clients. The menu shows "(masquerading)".
 
-**What ollama clients see.** On the ollama port the delegate answers `GET`/`HEAD /`
-("Ollama is running") and, with no local ollama, `/api/version` (a fixed `0.12.0`)
-itself. Clients check these first, and the `ollama` CLI launches Ollama.app if they
+**What ollama clients see.** On either port the delegate answers `GET`/`HEAD /`
+("Ollama is running") itself, and `/api/version` too: on the mesh port always, on
+the ollama port when there is no local ollama (a fixed `0.12.0`; with one, its own
+answer is passed through). Clients check these first, and the `ollama` CLI launches Ollama.app if they
 fail. `/api/tags` (what `ollama ls` calls) lists this machine's models as ollama
 reports them, plus peers' models with the fields filled in as far as we know them:
 the digest is a stand-in hash of the name, the size is 0 and the time is when the

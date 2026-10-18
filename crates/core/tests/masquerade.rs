@@ -73,15 +73,24 @@ async fn the_tokenshare_port_acts_as_a_delegate_with_no_models() {
     // Same delegate, same local ollama, but this port never uses it.
     assert_eq!(chat(&m.mesh, "gemma2").await.status(), 404);
     assert_eq!(m.state.pool.in_use(), 0);
-    let version = reqwest::get(format!("{}/api/version", m.mesh))
+    // Clients check /api/version (and HEAD /) first, and the ollama CLI gives up if
+    // they fail, so this port answers them itself, without the local ollama...
+    let version: serde_json::Value = reqwest::get(format!("{}/api/version", m.mesh))
+        .await
+        .unwrap()
+        .json()
         .await
         .unwrap();
-    assert_eq!(version.status(), 503, "no local ollama behind this port");
-    // ...while the ollama port answers the same call.
-    let version = reqwest::get(format!("{}/api/version", m.ollama))
+    assert_ne!(version["version"], "mock");
+    assert!(version["version"].as_str().is_some_and(|v| !v.is_empty()));
+    // ...while the ollama port passes the call through to the local ollama.
+    let version: serde_json::Value = reqwest::get(format!("{}/api/version", m.ollama))
+        .await
+        .unwrap()
+        .json()
         .await
         .unwrap();
-    assert_eq!(version.status(), 200);
+    assert_eq!(version["version"], "mock");
 }
 
 #[tokio::test]

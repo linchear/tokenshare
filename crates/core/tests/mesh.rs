@@ -791,3 +791,53 @@ async fn tags_entries_for_peer_models_are_complete() {
     assert!(e["modified_at"].as_str().unwrap().ends_with('Z'));
     assert!(e["size"].is_number() && e["details"].is_object());
 }
+
+#[tokio::test]
+async fn the_mesh_port_of_a_masquerading_delegate_also_answers_what_clients_check_first() {
+    use tokenshare_core::config::Face;
+    // A delegate with a working local ollama, served as the mesh-only face.
+    let a = node(NodeOpts {
+        models: &["gemma2:latest"],
+        ..Default::default()
+    })
+    .await;
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", l.local_addr().unwrap());
+    tokio::spawn(tokenshare_core::serve_face(
+        l,
+        a.state.clone(),
+        Face::Mesh,
+        std::future::pending(),
+    ));
+
+    let client = reqwest::Client::new();
+    assert_eq!(
+        client
+            .head(format!("{url}/"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_eq!(
+        reqwest::get(format!("{url}/"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap(),
+        "Ollama is running"
+    );
+    let v: Value = reqwest::get(format!("{url}/api/version"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_ne!(
+        v["version"], "mock",
+        "direct clients on the mesh port do not get the local ollama"
+    );
+    assert!(v["version"].as_str().is_some_and(|s| !s.is_empty()));
+}

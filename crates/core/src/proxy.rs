@@ -324,8 +324,9 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
     // The ollama CLI and most clients check `HEAD /` (and sometimes /api/version)
     // before anything else, and treat a failure as "no server running": the CLI
     // then tries to launch Ollama.app. A delegate with no local ollama must still
-    // answer, so it speaks for itself here instead of passing these through.
-    if on_ollama_port && (parts.method == Method::GET || parts.method == Method::HEAD) {
+    // answer, so it speaks for itself here instead of passing these through. Both
+    // faces do: clients can be pointed at the tokenshare port as well as 11434.
+    if parts.method == Method::GET || parts.method == Method::HEAD {
         if path == "/" {
             return (
                 [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
@@ -333,7 +334,9 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
             )
                 .into_response();
         }
-        if path == "/api/version" && s.table.first_up().is_none() {
+        // On the ollama port a local ollama's own answer wins; the mesh port has no
+        // local ollama for direct clients, so it always answers for itself.
+        if path == "/api/version" && (!on_ollama_port || s.table.first_up().is_none()) {
             return Json(json!({ "version": ADVERTISED_VERSION })).into_response();
         }
     }
