@@ -120,6 +120,56 @@ impl LocalTable {
     }
 }
 
+/// `unix_ms` as an RFC 3339 UTC timestamp, e.g. `2026-10-18T13:51:26Z`.
+pub fn rfc3339_utc(unix_ms: u64) -> String {
+    let secs = unix_ms / 1000;
+    let (days, rem) = (secs / 86_400, secs % 86_400);
+    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
+}
+
+/// An `/api/tags` entry for a model that lives on a peer. We only know its name,
+/// but clients index into the other fields: `ollama ls` slices the digest and
+/// panics if it is empty, so every field ollama sends is filled in. The digest
+/// is a stable hash of the name (a stand-in, not the real content digest), the
+/// size is unknown (0), and the time is when the peer was last heard from.
+pub fn peer_model_entry(name: &str, last_seen_ms: u64) -> Value {
+    use sha2::{Digest, Sha256};
+    let digest: String = Sha256::digest(format!("tokenshare:{name}"))
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    serde_json::json!({
+        "name": name,
+        "model": name,
+        "modified_at": rfc3339_utc(last_seen_ms),
+        "size": 0,
+        "digest": digest,
+        "details": {
+            "parent_model": "",
+            "format": "",
+            "family": "",
+            "families": null,
+            "parameter_size": "",
+            "quantization_level": "",
+        },
+    })
+}
+
 async fn fetch_models(client: &reqwest::Client, host: &str) -> anyhow::Result<Vec<ModelInfo>> {
     let body: Value = client
         .get(format!("{host}/api/tags"))
@@ -148,6 +198,34 @@ async fn fetch_models(client: &reqwest::Client, host: &str) -> anyhow::Result<Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn timestamps_are_rfc3339_utc() {
+        assert_eq!(rfc3339_utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(rfc3339_utc(951_782_400_000), "2000-02-29T00:00:00Z"); // leap day
+        assert_eq!(rfc3339_utc(1_792_331_486_000), "2026-10-18T13:51:26Z");
+        assert_eq!(rfc3339_utc(4_102_444_799_999), "2099-12-31T23:59:59Z");
+    }
+
+    #[test]
+    fn peer_entries_have_every_field_clients_index_into() {
+        let e = peer_model_entry("qwen3:14b", 1_792_331_486_000);
+        assert_eq!(e["name"], "qwen3:14b");
+        assert_eq!(e["model"], "qwen3:14b");
+        assert!(
+            e["digest"].as_str().unwrap().len() >= 12,
+            "ollama ls slices the first 12"
+        );
+        assert_eq!(
+            e["digest"],
+            peer_model_entry("qwen3:14b", 1)["digest"],
+            "stable per name"
+        );
+        assert_ne!(e["digest"], peer_model_entry("llama3:8b", 1)["digest"]);
+        assert_eq!(e["modified_at"], "2026-10-18T13:51:26Z");
+        assert_eq!(e["size"], 0);
+        assert!(e["details"].is_object());
+    }
 
     #[test]
     fn host_normalization() {

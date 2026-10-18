@@ -19,9 +19,14 @@ use tracing::{info, warn};
 
 use crate::config::{Config, Face};
 use crate::mesh;
-use crate::ollama::{model_matches, LocalTable};
+use crate::ollama::{model_matches, peer_model_entry, LocalTable};
 use crate::pool::Pool;
 use crate::table::DelegateTable;
+
+/// The ollama version reported on `/api/version` when there is no local ollama to
+/// ask (a client-only delegate, or its ollama is down). With one, its answer is
+/// passed through. Clients mostly only check that this is a plausible version.
+const ADVERTISED_VERSION: &str = "0.12.0";
 
 /// Request bodies can carry base64 images; allow generous sizes.
 const MAX_BODY_BYTES: usize = 256 * 1024 * 1024;
@@ -316,6 +321,22 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
     if parts.method == Method::GET && path == "/api/tags" {
         return tags(&s, on_ollama_port);
     }
+    // The ollama CLI and most clients check `HEAD /` (and sometimes /api/version)
+    // before anything else, and treat a failure as "no server running": the CLI
+    // then tries to launch Ollama.app. A delegate with no local ollama must still
+    // answer, so it speaks for itself here instead of passing these through.
+    if on_ollama_port && (parts.method == Method::GET || parts.method == Method::HEAD) {
+        if path == "/" {
+            return (
+                [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                "Ollama is running",
+            )
+                .into_response();
+        }
+        if path == "/api/version" && s.table.first_up().is_none() {
+            return Json(json!({ "version": ADVERTISED_VERSION })).into_response();
+        }
+    }
 
     let bytes = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
         Ok(b) => b,
@@ -463,7 +484,7 @@ fn tags(s: &AppState, include_local: bool) -> Response {
     {
         for name in peer.models {
             if !have.iter().any(|h| model_matches(&name, h)) {
-                models.push(json!({ "name": name, "model": name }));
+                models.push(peer_model_entry(&name, peer.last_seen));
                 have.push(name);
             }
         }

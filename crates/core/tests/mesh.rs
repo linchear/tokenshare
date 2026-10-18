@@ -704,7 +704,7 @@ async fn a_client_only_delegate_borrows_the_pools_ollama() {
         .unwrap();
     assert_eq!(tags["models"][0]["name"], "gemma2:latest");
     assert_eq!(
-        reqwest::get(format!("{}/api/version", c.url))
+        reqwest::get(format!("{}/api/ps", c.url))
             .await
             .unwrap()
             .status(),
@@ -736,4 +736,58 @@ async fn a_client_only_delegate_with_nobody_to_talk_to_is_down() {
         .unwrap();
     assert_eq!(status["state"], "down");
     assert_eq!(post_chat(&c.url, "gemma2").await.status(), 404);
+}
+
+// ---- what ollama clients check first ----
+
+#[tokio::test]
+async fn a_delegate_with_no_local_ollama_still_answers_the_health_check() {
+    let c = node(NodeOpts {
+        client_only: true,
+        ..Default::default()
+    })
+    .await;
+    let client = reqwest::Client::new();
+    // `ollama ls` starts with HEAD /; a failure makes the CLI try to launch Ollama.app.
+    let head = client.head(format!("{}/", c.url)).send().await.unwrap();
+    assert_eq!(head.status(), 200);
+    let get = reqwest::get(format!("{}/", c.url)).await.unwrap();
+    assert_eq!(get.status(), 200);
+    assert_eq!(get.text().await.unwrap(), "Ollama is running");
+    let v: Value = reqwest::get(format!("{}/api/version", c.url))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(v["version"].as_str().is_some_and(|s| !s.is_empty()));
+}
+
+#[tokio::test]
+async fn tags_entries_for_peer_models_are_complete() {
+    let a = node(NodeOpts {
+        models: &["gemma2:latest"],
+        ..Default::default()
+    })
+    .await;
+    let c = node(NodeOpts {
+        client_only: true,
+        fc: Some(&a.url),
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(rejoin(&c.state).await, Some(true));
+    converged(&[&a, &c]).await;
+    let tags: Value = reqwest::get(format!("{}/api/tags", c.url))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let e = &tags["models"][0];
+    assert_eq!(e["name"], "gemma2:latest");
+    // `ollama ls` slices the first 12 characters of the digest and panics without one.
+    assert!(e["digest"].as_str().unwrap().len() >= 12);
+    assert!(e["modified_at"].as_str().unwrap().ends_with('Z'));
+    assert!(e["size"].is_number() && e["details"].is_object());
 }
