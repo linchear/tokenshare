@@ -1,0 +1,16 @@
+[package]
+name = "tokenshare-tray"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+tokenshare-core = { version = "0.1.0", path = "../core" }
+tokio = { version = "1.53.3", features = ["rt-multi-thread"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+tao = "0.37.1"
+tray-icon = "0.26.1"

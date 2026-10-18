@@ -2,9 +2,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use tokenshare_core::config::{default_config_path, default_data_dir, load_or_create_id};
-use tokenshare_core::mesh::{join_loop, keepalive_loop, sync_loop};
-use tokenshare_core::{poll_local_table, serve, AppState, Config};
+use tokenshare_core::config::{default_config_path, default_data_dir};
+use tokenshare_core::{daemon, Config};
 use tracing::info;
 
 #[derive(Parser)]
@@ -60,22 +59,9 @@ async fn main() -> Result<()> {
     }
 
     let data_dir = default_data_dir().context("no home directory for data dir")?;
-    let id = load_or_create_id(&data_dir)?;
-
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", config.port))
-        .await
-        .with_context(|| format!("binding port {}", config.port))?;
-    info!(id, port = config.port, hosts = ?config.ollama_hosts, pool = config.pool_size, "delegate starting");
-
-    let state = AppState::new(id, config, Some(data_dir));
-    state.refresh_local().await;
-    tokio::spawn(poll_local_table(state.clone()));
-    tokio::spawn(join_loop(state.clone()));
-    tokio::spawn(keepalive_loop(state.clone()));
-    tokio::spawn(sync_loop(state.clone()));
-
-    serve(listener, state, shutdown_signal()).await?;
-    Ok(())
+    let running = daemon::start(config, data_dir).await?;
+    shutdown_signal().await;
+    running.stop().await
 }
 
 async fn shutdown_signal() {

@@ -14,7 +14,6 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use rand::seq::SliceRandom;
 use serde_json::{json, Value};
-use tokio::sync::OwnedSemaphorePermit;
 use tracing::{info, warn};
 
 use crate::config::Config;
@@ -136,24 +135,7 @@ pub async fn poll_local_table(state: Arc<AppState>) {
 }
 
 async fn status(State(s): State<Arc<AppState>>) -> Json<Value> {
-    let hosts: Vec<Value> = s
-        .table
-        .snapshot()
-        .into_iter()
-        .map(|h| {
-            json!({
-                "host": h.host,
-                "up": h.up,
-                "models": h.models.iter().map(|m| &m.name).collect::<Vec<_>>(),
-            })
-        })
-        .collect();
-    Json(json!({
-        "id": s.id,
-        "pool": { "size": s.pool.size(), "in_use": s.pool.in_use() },
-        "ollama": hosts,
-        "delegates": s.delegates.shared_entries(),
-    }))
+    Json(crate::status::status_json(&s))
 }
 
 fn error(status: StatusCode, msg: impl Into<String>) -> Response {
@@ -234,11 +216,11 @@ impl Outbound<'_> {
 /// permit, if any, rides in the stream so the slot is held until the response
 /// ends or the client disconnects (dropping the body drops the upstream
 /// connection too, which makes ollama stop generating).
-fn stream_response(resp: reqwest::Response, permit: Option<OwnedSemaphorePermit>) -> Response {
+fn stream_response<H: Send + 'static>(resp: reqwest::Response, held: H) -> Response {
     let status = resp.status();
     let headers = copy_headers(resp.headers());
     let stream = resp.bytes_stream().map(move |chunk| {
-        let _held = &permit;
+        let _held = &held;
         chunk
     });
     let mut out = Response::new(Body::from_stream(stream));
@@ -279,7 +261,7 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
             return error(StatusCode::SERVICE_UNAVAILABLE, "no ollama host available");
         };
         return match out.send(format!("{host}{path_and_query}"), None).await {
-            Ok(resp) => stream_response(resp, None),
+            Ok(resp) => stream_response(resp, ()),
             Err(e) => {
                 warn!(path, host, error = %e, "ollama request failed");
                 error(StatusCode::BAD_GATEWAY, "ollama request failed")
@@ -309,7 +291,7 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
             return match out.send(format!("{host}{path_and_query}"), None).await {
                 Ok(resp) => {
                     log(host, resp.status().as_u16());
-                    stream_response(resp, Some(permit))
+                    stream_response(resp, permit)
                 }
                 Err(e) => {
                     warn!(path, host, error = %e, "ollama request failed");
@@ -327,6 +309,8 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
         let mut peers = s.delegates.peers_with_model(&model, &visited);
         peers.shuffle(&mut rand::rng());
         candidates_exist |= !peers.is_empty();
+        // Counts as in-flight from the first attempt until the stream ends.
+        let mut guard = Some(s.pool.track_forward());
         for peer in peers {
             // Retrying is safe only until the first byte reaches the client.
             match out
@@ -338,7 +322,7 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
             {
                 Ok(resp) if resp.status().is_success() => {
                     log(&peer.url, resp.status().as_u16());
-                    return stream_response(resp, None);
+                    return stream_response(resp, guard.take());
                 }
                 Ok(resp) => {
                     info!(peer = %peer.url, status = resp.status().as_u16(), "peer declined, trying next")

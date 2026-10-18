@@ -92,8 +92,16 @@ Original scope:
 - Periodic full-table pull and merge, with the later `last_seen` winning.
 - Fault-injection tests: node death, partition, rejoin.
 
-### M4: UI
+### M4: UI (done)
 **Phase 5, Status and tray**
+
+As built:
+- Health is computed in `core::status`: down = no local ollama up and no online peer; in-use = any request in flight (served locally or forwarded to a peer); otherwise active. It is returned as `state` by `GET /_ts/status`.
+- `tokenshare-tray` runs the delegate in-process (via `core::daemon`) rather than polling a separate daemon, so one app does everything. It logs to `tokenshare.log` in the data dir. A start failure (for example the port is taken) shows a red icon and the error in the menu.
+- Verified on macOS: menubar-only bundle (`packaging/macos/build-app.sh`), green and red icons observed. Blue is covered by tests of the state logic only. The Windows build is untested locally (the cross-check fails in the aws-lc C build), so it relies on CI.
+- Linux: `tokenshare-tray` is a stub that exits. `packaging/linux/tokenshare.service` is the systemd user unit. A .deb is not done.
+
+Original scope:
 - `GET /_ts/status` (state and table).
 - Tray icon with the three colors, a peer-list menu, and quit.
 - macOS menubar `.app` and Windows tray exe packaging. The tray exists on these two platforms only.
