@@ -1,26 +1,156 @@
+//! Tray icons: a glossy round badge with a white symbol that says what is going
+//! on without relying on color alone: a check (active), a lightning bolt (in
+//! use), a cross (down). Drawn in code so there are no assets to ship.
+
 use tokenshare_core::status::Health;
 
+/// Pixel size of the icon we hand to the OS. Windows scales tray icons down to
+/// about 16-32 px, so a smaller source stays crisp there.
+#[cfg(target_os = "windows")]
 pub const SIZE: u32 = 32;
+#[cfg(not(target_os = "windows"))]
+pub const SIZE: u32 = 64;
 
-/// Green = active, blue = in use, red = down.
-pub fn color(health: Health) -> [u8; 3] {
+/// The emoji that goes with each state, for menu text and tooltips.
+pub fn emoji(health: Health) -> &'static str {
     match health {
-        Health::Active => [46, 160, 67],
-        Health::InUse => [47, 129, 247],
-        Health::Down => [218, 54, 51],
+        Health::Active => "✅",
+        Health::InUse => "⚡",
+        Health::Down => "❌",
     }
 }
 
-/// A filled, anti-aliased disc on a transparent background, as RGBA bytes.
-pub fn disc_rgba(size: u32, [r, g, b]: [u8; 3]) -> Vec<u8> {
-    let c = size as f32 / 2.0;
-    let radius = c - 2.0;
+type P = (f32, f32);
+
+/// (top-left highlight, bottom-right shade) of the badge.
+fn palette(health: Health) -> ([f32; 3], [f32; 3]) {
+    match health {
+        Health::Active => ([76.0, 217.0, 100.0], [30.0, 140.0, 62.0]),
+        Health::InUse => ([90.0, 170.0, 255.0], [20.0, 90.0, 220.0]),
+        Health::Down => ([255.0, 112.0, 98.0], [196.0, 37.0, 28.0]),
+    }
+}
+
+/// Distance from `p` to segment `a`-`b`.
+fn seg_dist(p: P, a: P, b: P) -> f32 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let t = (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+    ((p.0 - a.0 - t * dx).powi(2) + (p.1 - a.1 - t * dy).powi(2)).sqrt()
+}
+
+fn polyline_dist(p: P, pts: &[P]) -> f32 {
+    pts.windows(2)
+        .map(|w| seg_dist(p, w[0], w[1]))
+        .fold(f32::MAX, f32::min)
+}
+
+/// Signed distance to a closed polygon: negative inside.
+fn polygon_sdf(p: P, pts: &[P]) -> f32 {
+    let mut d = f32::MAX;
+    let mut inside = false;
+    for i in 0..pts.len() {
+        let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+        d = d.min(seg_dist(p, a, b));
+        if (a.1 > p.1) != (b.1 > p.1) && p.0 < (b.0 - a.0) * (p.1 - a.1) / (b.1 - a.1) + a.0 {
+            inside = !inside;
+        }
+    }
+    if inside {
+        -d
+    } else {
+        d
+    }
+}
+
+const CHECK: [P; 3] = [(0.27, 0.52), (0.43, 0.68), (0.74, 0.33)];
+const CROSS_A: [P; 2] = [(0.34, 0.34), (0.66, 0.66)];
+const CROSS_B: [P; 2] = [(0.66, 0.34), (0.34, 0.66)];
+const BOLT: [P; 6] = [
+    (0.60, 0.11),
+    (0.27, 0.56),
+    (0.46, 0.56),
+    (0.39, 0.89),
+    (0.73, 0.42),
+    (0.54, 0.42),
+];
+
+/// Signed distance to the symbol, in unit coordinates (negative inside).
+fn glyph_sdf(health: Health, p: P) -> f32 {
+    match health {
+        Health::Active => polyline_dist(p, &CHECK) - 0.065,
+        Health::Down => polyline_dist(p, &CROSS_A).min(polyline_dist(p, &CROSS_B)) - 0.065,
+        Health::InUse => polygon_sdf(p, &BOLT) - 0.012,
+    }
+}
+
+fn lerp(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
+}
+
+/// Premultiplied RGBA of one sample at unit coordinates `p`.
+fn sample(health: Health, p: P, px: f32) -> [f32; 4] {
+    let (hi, lo) = palette(health);
+    let (cx, cy) = (p.0 - 0.5, p.1 - 0.5);
+    let r = (cx * cx + cy * cy).sqrt();
+    // Badge: a disc with a gentle diagonal gradient, a darker rim and a soft top gloss.
+    let edge = 0.47 - r;
+    let cover = (edge / px + 0.5).clamp(0.0, 1.0);
+    if cover <= 0.0 {
+        return [0.0; 4];
+    }
+    let t = ((cx + cy) * 0.9 + 0.5).clamp(0.0, 1.0);
+    let mut c = lerp(hi, lo, t);
+    let rim = (1.0 - (edge / 0.045).clamp(0.0, 1.0)) * 0.28;
+    c = lerp(c, [c[0] * 0.55, c[1] * 0.55, c[2] * 0.55], rim);
+    let gloss = ((0.5 - p.1) * 2.0).clamp(0.0, 1.0) * (1.0 - (r / 0.45).clamp(0.0, 1.0)) * 0.22;
+    c = lerp(c, [255.0; 3], gloss);
+
+    // Symbol: a soft shadow just below it, then the white glyph.
+    let shadow = ((-glyph_sdf(health, (p.0, p.1 - 0.025)) / 0.03) + 0.5).clamp(0.0, 1.0) * 0.30;
+    c = lerp(c, [0.0; 3], shadow);
+    let g = (-glyph_sdf(health, p) / px + 0.5).clamp(0.0, 1.0);
+    c = lerp(c, [255.0; 3], g);
+    [c[0] * cover, c[1] * cover, c[2] * cover, 255.0 * cover]
+}
+
+/// RGBA bytes (straight alpha) for the icon, `size` x `size`, 4x4 supersampled.
+pub fn render(health: Health, size: u32) -> Vec<u8> {
+    const SS: u32 = 4;
+    let px = 1.0 / size as f32;
     let mut out = Vec::with_capacity((size * size * 4) as usize);
     for y in 0..size {
         for x in 0..size {
-            let d = ((x as f32 + 0.5 - c).powi(2) + (y as f32 + 0.5 - c).powi(2)).sqrt();
-            let alpha = (radius + 0.5 - d).clamp(0.0, 1.0);
-            out.extend_from_slice(&[r, g, b, (alpha * 255.0) as u8]);
+            let mut acc = [0.0f32; 4];
+            for sy in 0..SS {
+                for sx in 0..SS {
+                    let p = (
+                        (x as f32 + (sx as f32 + 0.5) / SS as f32) * px,
+                        (y as f32 + (sy as f32 + 0.5) / SS as f32) * px,
+                    );
+                    let s = sample(health, p, px);
+                    for i in 0..4 {
+                        acc[i] += s[i];
+                    }
+                }
+            }
+            let n = (SS * SS) as f32;
+            let a = acc[3] / n;
+            if a <= 0.0 {
+                out.extend_from_slice(&[0, 0, 0, 0]);
+            } else {
+                // Un-premultiply: acc holds color scaled by coverage, alpha is 255 * coverage.
+                let k = 255.0 / acc[3];
+                out.extend_from_slice(&[
+                    (acc[0] * k).round().min(255.0) as u8,
+                    (acc[1] * k).round().min(255.0) as u8,
+                    (acc[2] * k).round().min(255.0) as u8,
+                    a.round() as u8,
+                ]);
+            }
         }
     }
     out
@@ -30,22 +160,104 @@ pub fn disc_rgba(size: u32, [r, g, b]: [u8; 3]) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    fn px(buf: &[u8], size: u32, x: u32, y: u32) -> [u8; 4] {
+    const ALL: [Health; 3] = [Health::Active, Health::InUse, Health::Down];
+
+    fn px(buf: &[u8], size: u32, u: f32, v: f32) -> [u8; 4] {
+        let (x, y) = ((u * size as f32) as u32, (v * size as f32) as u32);
         let i = ((y * size + x) * 4) as usize;
         [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]
     }
 
-    #[test]
-    fn disc_is_opaque_in_the_middle_and_clear_in_the_corners() {
-        let buf = disc_rgba(SIZE, color(Health::InUse));
-        assert_eq!(buf.len(), (SIZE * SIZE * 4) as usize);
-        assert_eq!(px(&buf, SIZE, SIZE / 2, SIZE / 2), [47, 129, 247, 255]);
-        assert_eq!(px(&buf, SIZE, 0, 0)[3], 0);
+    fn is_white(p: [u8; 4]) -> bool {
+        p[3] == 255 && p[0] > 235 && p[1] > 235 && p[2] > 235
     }
 
     #[test]
-    fn each_state_has_its_own_color() {
-        let c = [Health::Active, Health::InUse, Health::Down].map(color);
-        assert!(c[0] != c[1] && c[1] != c[2] && c[0] != c[2]);
+    fn badge_fills_the_middle_and_leaves_the_corners_clear() {
+        for h in ALL {
+            let buf = render(h, 64);
+            assert_eq!(buf.len(), 64 * 64 * 4);
+            assert_eq!(px(&buf, 64, 0.01, 0.01)[3], 0, "{h:?} corner");
+            assert_eq!(px(&buf, 64, 0.99, 0.5)[3], 0, "{h:?} edge");
+            assert_eq!(px(&buf, 64, 0.5, 0.95)[3], 255, "{h:?} inside the rim");
+        }
+    }
+
+    #[test]
+    fn each_state_draws_its_own_symbol_in_white() {
+        let check = render(Health::Active, 64);
+        assert!(is_white(px(&check, 64, 0.43, 0.68)), "check vertex");
+        assert!(
+            !is_white(px(&check, 64, 0.70, 0.70)),
+            "no cross in the check icon"
+        );
+
+        let bolt = render(Health::InUse, 64);
+        assert!(is_white(px(&bolt, 64, 0.50, 0.50)), "bolt body");
+        assert!(!is_white(px(&bolt, 64, 0.20, 0.20)));
+
+        let cross = render(Health::Down, 64);
+        assert!(is_white(px(&cross, 64, 0.50, 0.50)), "cross center");
+        assert!(is_white(px(&cross, 64, 0.40, 0.40)));
+        assert!(
+            !is_white(px(&cross, 64, 0.50, 0.30)),
+            "gap between the arms"
+        );
+    }
+
+    #[test]
+    fn badge_colors_are_green_blue_red() {
+        let [g, b, r] = [Health::Active, Health::InUse, Health::Down].map(|h| {
+            let buf = render(h, 64);
+            px(&buf, 64, 0.5, 0.88)
+        });
+        assert!(g[1] > g[0] && g[1] > g[2], "green {g:?}");
+        assert!(b[2] > b[0] && b[2] > b[1], "blue {b:?}");
+        assert!(r[0] > r[1] && r[0] > r[2], "red {r:?}");
+    }
+
+    #[test]
+    fn emoji_differ_per_state() {
+        assert_eq!(ALL.map(emoji), ["✅", "⚡", "❌"]);
+    }
+
+    /// `ICON_PREVIEW=/path/sheet.png cargo test -p tokenshare-tray preview` writes
+    /// the three icons at 64 and 16 px on a dark and a light background.
+    #[test]
+    fn preview_sheet() {
+        let Ok(path) = std::env::var("ICON_PREVIEW") else {
+            return;
+        };
+        let (cell, w, h) = (96u32, 96 * 3, 96 * 2);
+        let mut img = vec![255u8; (w * h * 4) as usize];
+        for (row, bg) in [[30u8, 30, 32], [236, 236, 238]].into_iter().enumerate() {
+            for (col, health) in ALL.into_iter().enumerate() {
+                let (x0, y0) = (col as u32 * cell, row as u32 * cell);
+                for y in 0..cell {
+                    for x in 0..cell {
+                        let i = (((y0 + y) * w + x0 + x) * 4) as usize;
+                        img[i..i + 3].copy_from_slice(&bg);
+                    }
+                }
+                for (size, dx, dy) in [(64u32, 16u32, 8u32), (16, 40, 76)] {
+                    let icon = render(health, size);
+                    for y in 0..size {
+                        for x in 0..size {
+                            let s = ((y * size + x) * 4) as usize;
+                            let a = icon[s + 3] as f32 / 255.0;
+                            let d = (((y0 + dy + y) * w + x0 + dx + x) * 4) as usize;
+                            for k in 0..3 {
+                                img[d + k] =
+                                    (icon[s + k] as f32 * a + img[d + k] as f32 * (1.0 - a)) as u8;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut enc = png::Encoder::new(std::fs::File::create(path).unwrap(), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().unwrap().write_image_data(&img).unwrap();
     }
 }

@@ -50,12 +50,13 @@ struct SettingsWindow {
     window: Window,
 }
 
-fn label(h: Health) -> &'static str {
-    match h {
+fn label(h: Health) -> String {
+    let text = match h {
         Health::Active => "Active",
         Health::InUse => "In use",
         Health::Down => "Down",
-    }
+    };
+    format!("{} {text}", icon::emoji(h))
 }
 
 fn snapshot(current: &Shared) -> Snapshot {
@@ -63,7 +64,7 @@ fn snapshot(current: &Shared) -> Snapshot {
     let Some(s) = &c.state else {
         return Snapshot {
             health: Health::Down,
-            headline: "Token Share: not running".into(),
+            headline: format!("Token Share: {} Not running", icon::emoji(Health::Down)),
             pool: c.error.clone().unwrap_or_default(),
             peers: vec![],
         };
@@ -101,12 +102,7 @@ fn snapshot(current: &Shared) -> Snapshot {
 }
 
 fn icon_for(h: Health) -> Icon {
-    Icon::from_rgba(
-        icon::disc_rgba(icon::SIZE, icon::color(h)),
-        icon::SIZE,
-        icon::SIZE,
-    )
-    .expect("valid icon")
+    Icon::from_rgba(icon::render(h, icon::SIZE), icon::SIZE, icon::SIZE).expect("valid icon")
 }
 
 fn init_logging(data_dir: &std::path::Path) {
