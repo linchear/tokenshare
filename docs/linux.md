@@ -28,6 +28,7 @@ This installs:
 | --- | --- |
 | `/usr/bin/tokenshare` | the daemon |
 | `/usr/lib/systemd/user/tokenshare.service` | a systemd **user** service |
+| `/usr/share/man/man1/tokenshare.1.gz` | the manual page (`man tokenshare`) |
 | `/usr/share/doc/tokenshare/` | this README and `config.example.toml` |
 
 On other distributions, copy the `tokenshare` binary somewhere on your `PATH`
@@ -105,7 +106,8 @@ pool_size = 3
 port = 11343
 ```
 
-Restart the service after editing. Command-line flags override the file:
+Restart the service after editing. `man tokenshare` documents every option and
+config key. Command-line flags override the file:
 
 | Flag | Config key | Meaning |
 | --- | --- | --- |

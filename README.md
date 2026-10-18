@@ -225,8 +225,8 @@ packaging/linux/build-deb.sh     # target/deb/tokenshare_<version>_amd64.deb
   `tokenshare.exe` and `WebView2Loader.dll`, which must stay next to the tray
   exe. Unzip anywhere and run the tray exe.
 - **Linux** (`brew install zig dpkg`, `cargo install cargo-zigbuild`): the
-  `.deb` installs `/usr/bin/tokenshare`, a systemd *user* unit, and an example
-  config under `/usr/share/doc/tokenshare/`. It is built against glibc 2.17 and
+  `.deb` installs `/usr/bin/tokenshare`, its man page (`man tokenshare`), a
+  systemd *user* unit, and an example config under `/usr/share/doc/tokenshare/`. It is built against glibc 2.17 and
   needs only libc. After `sudo apt install ./tokenshare_*_amd64.deb`, run
   `systemctl --user enable --now tokenshare`; configuration is read from
   `~/.config/tokenshare/config.toml`. To keep it running without a login

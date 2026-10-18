@@ -1,0 +1,269 @@
+.TH TOKENSHARE 1 "@DATE@" "tokenshare @VERSION@" "User Commands"
+.SH NAME
+tokenshare \- route ollama requests among several machines
+.SH SYNOPSIS
+.B tokenshare
+.RB [ \-\-config
+.IR FILE ]
+.RB [ \-\-port
+.IR PORT ]
+.RB [ \-\-fc
+.IR URL ]
+.RB [ \-\-advertise\-url
+.IR URL ]
+.RB [ \-\-ollama\-host
+.IR URL ]...
+.RB [ \-\-client\-only ]
+.RB [ \-\-masquerade ]
+.RB [ \-\-pool\-size
+.IR N ]
+.SH DESCRIPTION
+.B tokenshare
+runs a delegate: a small server that listens on one port (11343 by default) and
+speaks the ollama API.
+A request for a model is served by the local ollama when it has the model and a
+free connection, and is otherwise streamed from another delegate that has it.
+Delegates find each other by joining through a first-contact delegate and then
+exchange keepalives and delegate tables.
+.PP
+Point an ollama client at a delegate instead of at ollama:
+.PP
+.RS
+.nf
+OLLAMA_HOST=http://localhost:11343 ollama run llama3.2
+.fi
+.RE
+.PP
+There is no authentication or encryption.
+Run it only on a trusted network such as a LAN or a VPN, and never expose the
+port to the internet.
+.PP
+Without a configuration file the delegate uses the ollama at
+.I http://localhost:11434
+and listens on port 11343.
+.SH OPTIONS
+Options override the configuration file.
+.TP
+.BI \-\-config " FILE"
+Read configuration from
+.I FILE
+instead of the per-user default (see
+.BR FILES ).
+.TP
+.BI \-\-port " PORT"
+Listen on
+.IR PORT .
+Ollama requests and coordination traffic share this port.
+.TP
+.BI \-\-fc " URL"
+First-contact delegate to join at startup, for example
+.IR http://192.168.2.3:11343 .
+It is an ordinary delegate.
+.TP
+.BI \-\-advertise\-url " URL"
+The address other delegates should use to reach this one.
+By default it is learned from how the first-contact delegate was reached.
+Set it when the machine has several addresses or sits behind NAT.
+.TP
+.BI \-\-ollama\-host " URL"
+An ollama instance reachable from this machine.
+May be given several times.
+.TP
+.B \-\-client\-only
+Use no local ollama and borrow only other delegates' models.
+Overrides
+.BR \-\-ollama\-host .
+.TP
+.B \-\-masquerade
+Listen on port 11434, ollama's own port, so applications already pointed at
+ollama use the pool unchanged.
+Move the local ollama to another port first, for example
+.BR "OLLAMA_HOST=127.0.0.1:11435" ,
+and list that address as the ollama host.
+The delegate refuses to start if an ollama host points back at itself or if the
+port is in use.
+.TP
+.BI \-\-pool\-size " N"
+Maximum number of concurrent requests sent to the local ollama (default 3).
+.TP
+.BR \-h ", " \-\-help
+Print usage.
+.TP
+.BR \-V ", " \-\-version
+Print the version.
+.SH CONFIGURATION
+The configuration file is TOML.
+Every key is optional.
+.TP
+.B port
+Listen port.
+Default 11343.
+.TP
+.B masquerade
+Listen on 11434 instead of
+.BR port .
+Default false.
+.TP
+.B fc
+First-contact delegate URL.
+Default none.
+.TP
+.B advertise_url
+How other delegates reach this one.
+Default: detected.
+.TP
+.B ollama_hosts
+List of ollama URLs.
+Default
+.IR [\(dqhttp://localhost:11434\(dq] .
+An empty list makes a client-only delegate.
+.TP
+.B pool_size
+Concurrent requests to ollama.
+Default 3.
+.TP
+.B share_with_peers
+When false, other delegates see this machine as serving nothing and their
+forwarded requests are refused, while local use is unchanged.
+Default true.
+.TP
+.B poll_interval_secs
+How often to refresh the local model list.
+Default 10.
+.TP
+.B rejoin_retry_secs
+Wait before retrying when no delegate could be reached at startup.
+Default 300.
+.TP
+.B keepalive_interval_secs
+How often to send a keepalive to one random delegate.
+Default 30.
+.TP
+.B keepalive_ttl
+Extra hops a keepalive is relayed.
+Default 3.
+.TP
+.B sync_interval_secs
+How often to pull the full delegate table from one random delegate.
+Default 60.
+.TP
+.B shutdown_grace_secs
+On shutdown, how long to let requests in flight finish before cutting them off.
+Default 30.
+.PP
+Example:
+.PP
+.RS
+.nf
+fc = "http://192.168.2.3:11343"
+ollama_hosts = ["http://localhost:11434"]
+pool_size = 3
+.fi
+.RE
+.SH ROUTING
+A request that names a model is served locally if the local ollama has the model
+and a connection is free.
+Otherwise it is sent to an online delegate that has the model, chosen at random,
+trying the next if one is busy, unreachable or returns an error.
+If all are busy the reply is 503 with a Retry-After header; if no delegate has
+the model it is 404.
+.PP
+Responses are streamed as they arrive.
+A request is retried on another delegate only before the first response byte;
+if a stream fails midway the client connection is broken rather than ended
+cleanly.
+.PP
+.B GET /api/tags
+lists the models of the whole pool.
+Other ollama endpoints are answered by the local ollama only.
+.SH STATUS ENDPOINT
+.B GET /_ts/status
+returns JSON describing the delegate: its
+.IR id ,
+.IR state ,
+.IR draining ,
+.IR pool ,
+the local
+.I ollama
+hosts and the known
+.IR delegates .
+The
+.I state
+is one of:
+.TP
+.B active
+a model is available and nothing is running;
+.TP
+.B in-use
+requests are in flight;
+.TP
+.B no-models
+no model is available anywhere, but other delegates are online;
+.TP
+.B down
+no model is available and no other delegate is online.
+.SH ENVIRONMENT
+.TP
+.B RUST_LOG
+Log level, for example
+.BR debug .
+Default
+.BR info .
+Logs record request metrics (path, model, status, timing) and never request
+content.
+.SH FILES
+.TP
+.I ~/.config/tokenshare/config.toml
+Configuration.
+.TP
+.I ~/.local/share/tokenshare/id
+This delegate's random ID.
+Do not copy it to another machine.
+.TP
+.I ~/.local/share/tokenshare/table.json
+Saved list of other delegates, used to rejoin after a restart.
+.TP
+.I /usr/lib/systemd/user/tokenshare.service
+systemd user unit.
+.TP
+.I /usr/share/doc/tokenshare/
+README and an example configuration.
+.SH SIGNALS
+.B SIGINT
+and
+.B SIGTERM
+shut the delegate down gracefully: it stops gossiping, refuses new model
+requests with 503, waits up to
+.B shutdown_grace_secs
+for requests in flight, then cuts off any still streaming.
+.SH EXAMPLES
+Run as a systemd user service:
+.PP
+.RS
+.nf
+systemctl \-\-user enable \-\-now tokenshare
+journalctl \-\-user \-u tokenshare \-f
+.fi
+.RE
+.PP
+Join an existing pool:
+.PP
+.RS
+.nf
+tokenshare \-\-fc http://192.168.2.3:11343
+.fi
+.RE
+.PP
+Check what the delegate sees:
+.PP
+.RS
+.nf
+curl \-s http://localhost:11343/_ts/status
+.fi
+.RE
+.SH SEE ALSO
+.BR ollama (1),
+.BR systemctl (1),
+.BR journalctl (1)
+.PP
+.I /usr/share/doc/tokenshare/README.md

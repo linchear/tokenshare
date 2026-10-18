@@ -14,12 +14,18 @@ version=$(cargo metadata --no-deps --format-version 1 |
 maintainer=$(git config user.name) email=$(git config user.email)
 pkg=target/deb/tokenshare_${version}_amd64
 rm -rf "$pkg"
-mkdir -p "$pkg/DEBIAN" "$pkg/usr/bin" "$pkg/usr/lib/systemd/user" "$pkg/usr/share/doc/tokenshare"
+mkdir -p "$pkg/DEBIAN" "$pkg/usr/bin" "$pkg/usr/lib/systemd/user" "$pkg/usr/share/doc/tokenshare" "$pkg/usr/share/man/man1"
 
 install -m 0755 "target/$target/release/tokenshare" "$pkg/usr/bin/tokenshare"
 install -m 0644 packaging/linux/tokenshare.service "$pkg/usr/lib/systemd/user/tokenshare.service"
 install -m 0644 packaging/linux/config.example.toml "$pkg/usr/share/doc/tokenshare/config.example.toml"
 install -m 0644 README.md "$pkg/usr/share/doc/tokenshare/README.md"
+
+# Man page: fill in version and date, then compress as Debian policy asks
+# (-n keeps the output reproducible by leaving out the timestamp).
+sed -e "s/@VERSION@/$version/" -e "s/@DATE@/$(date +%Y-%m-%d)/" packaging/linux/tokenshare.1 |
+  gzip -9n > "$pkg/usr/share/man/man1/tokenshare.1.gz"
+chmod 0644 "$pkg/usr/share/man/man1/tokenshare.1.gz"
 
 size=$(du -sk "$pkg/usr" | cut -f1)
 cat > "$pkg/DEBIAN/control" <<CONTROL
