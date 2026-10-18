@@ -119,3 +119,7 @@ Original scope:
 ## Post-M4: settings UI
 
 The tray menu has *Settings…*, a small webview window (`wry`) that edits the first contact, ollama hosts, pool size, port and advertise URL. Validation and the form-to-config mapping live in `core::settings` (tested everywhere). On save the config is written atomically and the in-process delegate is restarted. macOS notes: the window temporarily switches the app to a regular (Dock) app so it gets focus, and Cmd+A/C/X/V are implemented in the page plus the system clipboard (`arboard`), because the native Edit menu did not work for this window. Verified on macOS by driving the real window (select all, paste, copy, a rejected save, an accepted save and restart). Not verified on Windows.
+
+## Post-M4: not sharing
+
+`share_with_peers` (default true, a checkbox in Settings). When false the delegate publishes an empty model list in its own entry (so keepalives, joins and syncs tell peers it serves nothing) and rejects forwarded requests (those with the visited header) with 503, which covers peers holding stale info. Local requests and forwarding to others are unchanged. Not a runtime toggle: changing it goes through the settings save, which restarts the delegate.

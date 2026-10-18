@@ -21,6 +21,10 @@ pub struct Config {
     pub ollama_hosts: Vec<String>,
     /// Max concurrent requests sent to ollama.
     pub pool_size: usize,
+    /// Let other delegates use this machine's ollama. When false it looks down
+    /// to them (no models advertised, forwarded requests refused), while this
+    /// machine's own users still get local ollama and the rest of the pool.
+    pub share_with_peers: bool,
     /// How often to refresh the local model list.
     pub poll_interval_secs: u64,
     /// Wait before trying to rejoin when no known delegate answered.
@@ -43,6 +47,7 @@ impl Default for Config {
             advertise_url: None,
             ollama_hosts: vec![DEFAULT_OLLAMA_HOST.to_string()],
             pool_size: 3,
+            share_with_peers: true,
             poll_interval_secs: 10,
             rejoin_retry_secs: 300,
             keepalive_interval_secs: 30,

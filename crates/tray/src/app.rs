@@ -90,7 +90,15 @@ fn snapshot(current: &Shared) -> Snapshot {
         .collect();
     Snapshot {
         health: h,
-        headline: format!("Token Share: {}", label(h)),
+        headline: format!(
+            "Token Share: {}{}",
+            label(h),
+            if s.config.share_with_peers {
+                ""
+            } else {
+                " (not sharing)"
+            }
+        ),
         pool: format!(
             "Requests: {} local of {}, {} forwarded",
             s.pool.in_use(),

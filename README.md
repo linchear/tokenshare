@@ -65,6 +65,7 @@ A TOML file; every key is optional. Command-line flags override it.
 | `advertise_url` | learned | How peers reach this delegate (learned from the first delegate it joins) |
 | `ollama_hosts` | `["http://localhost:11434"]` | Ollama instances reachable from this machine |
 | `pool_size` | `3` | Max concurrent requests to ollama |
+| `share_with_peers` | `true` | Let other delegates use this machine's ollama (see below) |
 | `poll_interval_secs` | `10` | How often to refresh local models |
 | `rejoin_retry_secs` | `300` | Wait before retrying when no delegate answered |
 | `keepalive_interval_secs` | `30` | Keepalive period |
@@ -116,8 +117,16 @@ or failed to start. The menu
 shows state, pool usage and the delegate list. Quit waits up to 5 seconds for
 in-flight requests.
 
+**Not sharing.** With `share_with_peers = false` (the *Share my ollama with other
+delegates* checkbox in Settings) this delegate looks like its ollama is down to
+everyone else: it advertises no models, so peers do not choose it, and it refuses
+any forwarded request with 503 in case a peer's view is stale. Its own users are
+unaffected: requests to it are still served by its local ollama and, failing
+that, by other delegates. The menu shows "(not sharing)" and `/_ts/status`
+reports `"sharing": false`.
+
 **Settings.** Choose *Settings…* in the tray menu to edit the first contact,
-ollama hosts (one per line), connections to ollama, listen port and, under
+ollama hosts (one per line), whether to share your ollama, connections to ollama, listen port and, under
 Advanced, the advertise URL. *Save & Restart* validates the values, writes the
 config file and restarts the delegate with them; requests in flight get a few
 seconds to finish. Other options (intervals, TTL, grace period) are kept as they

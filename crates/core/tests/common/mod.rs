@@ -167,6 +167,8 @@ pub struct NodeOpts<'a> {
     pub data_dir: Option<std::path::PathBuf>,
     pub id: Option<String>,
     pub keepalive_interval_secs: Option<u64>,
+    /// Let peers use this node's ollama (default true).
+    pub share: bool,
 }
 
 impl Default for NodeOpts<'_> {
@@ -179,6 +181,7 @@ impl Default for NodeOpts<'_> {
             data_dir: None,
             id: None,
             keepalive_interval_secs: None,
+            share: true,
         }
     }
 }
@@ -194,6 +197,7 @@ pub async fn node(opts: NodeOpts<'_>) -> Node {
         fc: opts.fc.map(str::to_string),
         ollama_hosts: vec![mock.url.clone()],
         pool_size: opts.pool,
+        share_with_peers: opts.share,
         keepalive_interval_secs: opts.keepalive_interval_secs.unwrap_or(30),
         ..Config::default()
     };

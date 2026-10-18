@@ -572,3 +572,99 @@ async fn keepalive_loop_runs_on_its_interval() {
     .await;
     handle.abort();
 }
+
+// ---- not sharing with peers ----
+
+#[tokio::test]
+async fn a_delegate_that_does_not_share_advertises_no_models() {
+    let a = node(NodeOpts {
+        models: &["gemma2:latest"],
+        share: false,
+        ..Default::default()
+    })
+    .await;
+    let c = node(NodeOpts {
+        fc: Some(&a.url),
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(rejoin(&c.state).await, Some(true));
+    converged(&[&a, &c]).await;
+
+    assert!(models_of(&c, &a).is_empty(), "peers see no models");
+    // Nobody else has the model, so as far as C is concerned it does not exist.
+    assert_eq!(post_chat(&c.url, "gemma2").await.status(), 404);
+    let tags: Value = reqwest::get(format!("{}/api/tags", c.url))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(tags["models"].as_array().unwrap().is_empty());
+    // A's own users are unaffected.
+    assert_eq!(post_chat(&a.url, "gemma2").await.status(), 200);
+    let status: Value = reqwest::get(format!("{}/_ts/status", a.url))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(status["sharing"], false);
+    assert_eq!(status["state"], "active", "its own ollama is still up");
+}
+
+#[tokio::test]
+async fn forwarded_requests_are_refused_even_if_a_peer_has_stale_info() {
+    let a = node(NodeOpts {
+        models: &["gemma2:latest"],
+        share: false,
+        ..Default::default()
+    })
+    .await;
+    // A peer that still believes A serves gemma2 sends it along.
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/chat", a.url))
+        .header("x-tokenshare-visited", "some-peer")
+        .json(&chat("gemma2"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 503);
+    assert_eq!(a.state.pool.in_use(), 0, "no slot was used");
+}
+
+#[tokio::test]
+async fn a_non_sharing_delegate_still_uses_the_pool() {
+    let d = node(NodeOpts {
+        models: &["gemma2:latest"],
+        ..Default::default()
+    })
+    .await;
+    let a = node(NodeOpts {
+        share: false,
+        fc: Some(&d.url),
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(rejoin(&a.state).await, Some(true));
+    converged(&[&d, &a]).await;
+    assert_eq!(post_chat(&a.url, "gemma2").await.status(), 200);
+}
+
+#[tokio::test]
+async fn a_sharing_delegate_is_still_used_by_others() {
+    let a = node(NodeOpts {
+        models: &["gemma2:latest"],
+        ..Default::default()
+    })
+    .await;
+    let c = node(NodeOpts {
+        fc: Some(&a.url),
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(rejoin(&c.state).await, Some(true));
+    converged(&[&a, &c]).await;
+    assert_eq!(models_of(&c, &a), vec!["gemma2:latest".to_string()]);
+    assert_eq!(post_chat(&c.url, "gemma2").await.status(), 200);
+}

@@ -108,13 +108,17 @@ impl AppState {
     /// Re-query local ollama hosts and publish the result in our own entry.
     pub async fn refresh_local(&self) {
         self.table.refresh(&self.client).await;
-        self.delegates.update_self(
+        // Not sharing means advertising no models, so peers never pick us.
+        let models = if self.config.share_with_peers {
             self.table
                 .all_models()
                 .into_iter()
                 .map(|m| m.name)
-                .collect(),
-        );
+                .collect()
+        } else {
+            vec![]
+        };
+        self.delegates.update_self(models);
     }
 }
 
@@ -332,6 +336,15 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
     };
     let mut visited = visited_ids(&parts.headers);
     let forwarded = !visited.is_empty();
+    if forwarded && !s.config.share_with_peers {
+        // A peer's view of us can be stale (it may still list our models), so
+        // refuse here too. It treats this like any other busy peer and moves on.
+        info!(path, model, status = 503, "not sharing with peers");
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this delegate is not sharing its ollama",
+        );
+    }
     let log = |target: &str, status: u16| {
         info!(
             method = %parts.method, path, model, target, status, forwarded,

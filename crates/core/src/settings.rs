@@ -17,6 +17,8 @@ pub struct Form {
     pub ollama_hosts: String,
     pub port: String,
     pub pool_size: String,
+    /// Let other delegates use this machine's ollama.
+    pub share_with_peers: bool,
 }
 
 impl Form {
@@ -27,6 +29,7 @@ impl Form {
             ollama_hosts: c.ollama_hosts.join("\n"),
             port: c.port.to_string(),
             pool_size: c.pool_size.to_string(),
+            share_with_peers: c.share_with_peers,
         }
     }
 }
@@ -87,6 +90,8 @@ pub fn apply(form: &Form, base: &Config) -> Result<Config, Vec<String>> {
         _ => errors.push("Connections must be a number from 1 to 64".into()),
     }
 
+    c.share_with_peers = form.share_with_peers;
+
     if errors.is_empty() {
         Ok(c)
     } else {
@@ -132,6 +137,16 @@ mod tests {
             c.ollama_hosts,
             vec!["http://localhost:11434", "http://gpu:11434"]
         );
+    }
+
+    #[test]
+    fn sharing_toggle_round_trips() {
+        let mut f = form();
+        assert!(f.share_with_peers, "sharing is on by default");
+        f.share_with_peers = false;
+        let c = apply(&f, &Config::default()).unwrap();
+        assert!(!c.share_with_peers);
+        assert!(!Form::from_config(&c).share_with_peers);
     }
 
     #[test]

@@ -48,10 +48,12 @@ mod tests {
     #[test]
     fn messages_parse() {
         let save: Message = serde_json::from_str(
-            r#"{"cmd":"save","form":{"fc":"","advertise_url":"","ollama_hosts":"x","port":"1","pool_size":"2"}}"#,
+            r#"{"cmd":"save","form":{"fc":"","advertise_url":"","ollama_hosts":"x","port":"1","pool_size":"2","share_with_peers":false}}"#,
         )
         .unwrap();
-        assert!(matches!(save, Message::Save { form } if form.pool_size == "2"));
+        assert!(
+            matches!(save, Message::Save { form } if form.pool_size == "2" && !form.share_with_peers)
+        );
         assert!(matches!(
             serde_json::from_str::<Message>(r#"{"cmd":"cancel"}"#).unwrap(),
             Message::Cancel
