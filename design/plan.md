@@ -126,8 +126,12 @@ The tray menu has *Settings…*, a small webview window (`wry`) that edits the f
 
 ## Post-M4: client-only delegates
 
-`ollama_hosts` may be empty. Settings accepts a blank field (the share checkbox greys out), `tokenshare --client-only` clears the list, and the tray menu says "(client only)". Behavior needed no routing changes: with no local host the model is never found locally, so every request goes to a peer. Health is down until a peer is online.
+`ollama_hosts` may be empty. Settings accepts a blank field (the share checkbox greys out), `tokenshare --client-only` clears the list, and the tray menu says "(client only)". Behavior needed no routing changes: with no local host the model is never found locally, so every request goes to a peer. Health follows the usual rules: red until a peer is online, yellow while online peers have no models, green once one does.
 
 ## Post-M4: masquerade
 
 `masquerade` makes the delegate listen on 11434 (`Config::listen_port`) while keeping `port` for later. Guards: a configured ollama host that points at our own listen port is refused (settings and `daemon::start`), and `config::port_in_use` (connect to loopback plus bind) catches a busy port, including loopback-only listeners that a wildcard bind would not notice on macOS. Settings shows a non-blocking warning for a busy port with a *Save Anyway* second step; a failed start then shows in the form and the tray. Verified live on macOS: free port, busy port, warning then forced save, then a real masquerading start.
+
+## Post-M4: yellow health state
+
+Health is four states: green (a model is available, idle), blue (a request in flight), yellow (no model available anywhere but at least one other delegate is online) and red (no model and no online peer, or not running). "Available" means a model listed by this machine's ollama or by an online peer; a reachable ollama or an online peer with no models does not count. The status endpoint reports `no-models` for yellow. Icons are drawn per state (check, bolt, exclamation mark on a warning-yellow badge, cross) with matching emoji in the menu text. Verified live on macOS for green, red and yellow; blue is covered by tests.

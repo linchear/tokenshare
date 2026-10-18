@@ -111,10 +111,14 @@ packaging/macos/build-app.sh   # builds target/release/bundle/Token Share.app
 
 The tray apps run the delegate themselves; do not also run the daemon on the
 same port. The icon is a round badge with a symbol, so state does not depend on color
-alone: a green **check** (✅) when up and idle, a blue **lightning bolt** (⚡)
-while any request is in flight (served here or forwarded), and a red **cross**
-(❌) when the delegate cannot serve anything (no local ollama and no online peer)
-or failed to start. The menu
+alone: a green **check** (✅) when a model is available and the delegate is idle, a
+blue **lightning bolt** (⚡) while any request is in flight (served here or
+forwarded), a yellow **exclamation mark** (⚠️) when no model is available anywhere
+but other delegates are online (it turns green by itself when some ollama comes
+back), and a red **cross** (❌) when no model is available and no other delegate
+is online, or the delegate failed to start. "Available" means a model listed by
+this machine's ollama or by an online peer; a reachable ollama with nothing
+installed does not count. The menu
 shows state, pool usage and the delegate list. Quit waits up to 5 seconds for
 in-flight requests.
 
