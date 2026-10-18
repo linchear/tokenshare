@@ -67,6 +67,15 @@ the `fc` machine will then reach out to each of the delegates in its delegate ta
 - If the delegate returns a non OK response, it will try the next delegate. 
 - If all its delegates are full, then return 500. 
 
+### Streaming
+- Ollama streams `/api/chat` and `/api/generate` as NDJSON (one chunk per token). Streaming is the default, so the proxy must not depend on the client's `stream` flag.
+- Request side is buffered: the delegate reads the whole request body (capped, ~256 MB for base64 images) so it can read the `model` field and replay the body to another delegate if the first attempt fails.
+- Response side is not buffered: the upstream byte stream is passed straight to the client as it arrives, so first-token latency matches talking to ollama directly. Content-Length and hop-by-hop headers are dropped and the response goes out chunked.
+- No total timeout on upstream requests (generations can run for minutes); only a connect timeout.
+- The pool slot is held for the lifetime of the response stream and released when the stream ends or is dropped. If the client disconnects mid-generation, the upstream connection is dropped too, so ollama cancels generation and the slot is freed.
+- Retry / "try next delegate" only happens before any response byte has been sent to the client (connect errors, a full peer returning 503, non-2xx). If the upstream fails after streaming has started, the client connection is cut and the client sees a truncated stream.
+- A forwarded request streams the peer's response through the same way. Forwarded requests carry a visited header and are served locally or rejected by the receiving delegate, never forwarded again.
+
 ### Announce & Bookkeeping
 - every so often, the delegate will send a small keep-alive message to one of its delegate host table, with its available model and avg GPU/CPU load.
   - if the delegate is unresponsive, mark that targetted delegate as unavailable
@@ -89,7 +98,7 @@ the `fc` machine will then reach out to each of the delegates in its delegate ta
 - icon in taskbar/menubar should show green for active, blue for in-use, red for down.
 
 ## Technical
-- language; rust or java
+- language; rust or c++
 - communication; http (TCP)
 - macos: menubar app
 - windows: taskbar app

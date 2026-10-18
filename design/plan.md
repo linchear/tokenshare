@@ -16,6 +16,13 @@ macOS, Windows, and Linux are all first-class targets. The tray UI is macOS and 
 - **Local ollama table**: the list of ollama instances reachable directly from this delegate, with the models each serves. Built by polling `/api/tags`.
 - **Port sharing**: coordination lives under `/_ts/*`. Everything else is ollama passthrough. `/api/tags` returns the union of models across the pool. Other non-inference endpoints (`pull`, etc.) go to local ollama only.
 - **Model routing**: parse the JSON body to read `model`. Buffer the body so it can be replayed to another delegate. Stream responses through unbuffered.
+- **Streaming** (per the design's Streaming section):
+  - Never depend on the client's `stream` flag. Ollama streams NDJSON by default, so every response is passed through as it arrives.
+  - The request body is buffered, capped at ~256 MB. The response is not buffered. Content-Length and hop-by-hop headers are dropped, and the response goes out chunked.
+  - No total timeout on upstream requests, only a connect timeout.
+  - The pool slot lives as long as the response stream. It frees when the stream ends or is dropped. A client disconnect drops the upstream connection, so ollama cancels generation.
+  - Retry or try-next only happens before any response byte has been sent. After streaming starts, an upstream failure cuts the client connection (a truncated stream, never a clean end).
+  - A forwarded request streams the peer's response through the same way and carries the visited header.
 - **Loop prevention**: forwarded requests carry an `X-TokenShare-Visited` header (list of delegate IDs). A delegate receiving a forwarded request serves it locally or returns an error. It never forwards again.
 - **Pool**: a local counter (semaphore), default 3, configurable. Full means the counter is exhausted.
 - **ID**: random UUID, persisted in the config dir. No MAC hash.
@@ -30,7 +37,7 @@ macOS, Windows, and Linux are all first-class targets. The tray UI is macOS and 
 
 ## Phases
 
-### M1: Single-node proxy
+### M1: Single-node proxy (done, commit fdd14f2)
 **Phase 0, Scaffold**
 - Cargo workspace, CI (fmt, clippy, test on macOS, Windows, Linux).
 - Config via file, env, and CLI flags: `port` (11343), `fc`, `ollama_hosts`, `pool_size` (3), `keepalive_interval`, `sync_interval`.
@@ -39,7 +46,7 @@ macOS, Windows, and Linux are all first-class targets. The tray UI is macOS and 
 **Phase 1, Local proxy**
 - axum server on the configured port.
 - Local ollama table with periodic `/api/tags` polling.
-- Model extraction, a bounded pool, streaming passthrough.
+- Model extraction, a bounded pool, streaming passthrough. Streaming behavior is implemented as in the Streaming decision above, except for the items listed in the mid-stream and client-disconnect tests under Phase 3.
 - Request-metrics logging with no content.
 - Tests against a mock ollama.
 
@@ -56,9 +63,16 @@ macOS, Windows, and Linux are all first-class targets. The tray UI is macOS and 
 **Phase 3, Routing**
 - Try local first (model present and a pool slot free).
 - Otherwise try peers that have the model, in random order, skipping unavailable ones. Move on when a peer is full or returns non-2xx.
-- Retry only before any response bytes have been streamed.
-- Return 503 if all are exhausted.
+- Retry only before any response bytes have been streamed (connect errors, a full peer returning 503, non-2xx). The buffered request body is replayed to the next candidate.
+- Forwarded responses stream through the same path as local ones, holding no local pool slot (the peer holds its own).
+- Return 503 with `Retry-After` if all are exhausted.
 - Loop prevention via the visited header.
+- Streaming tests:
+  - Forwarded response arrives chunk by chunk, not buffered (check first chunk before the last is produced).
+  - A peer that fails before sending bytes causes a retry on the next peer.
+  - A peer that dies mid-stream truncates the client stream with an error, with no retry and no clean end.
+  - A client disconnect during a forwarded stream drops the connection to the peer.
+  - Add the mid-stream upstream failure test for the local path too. M1 covers client disconnect but not upstream failure mid-stream.
 
 ### M3: Self-healing
 **Phase 4, Keepalive and sync**
