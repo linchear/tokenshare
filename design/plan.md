@@ -115,3 +115,7 @@ Original scope:
 - Graceful shutdown with in-flight drain.
 - README, including the full-mesh scaling limit.
 - Later options: partial gossip views, metrics, auth.
+
+## Post-M4: settings UI
+
+The tray menu has *Settings…*, a small webview window (`wry`) that edits the first contact, ollama hosts, pool size, port and advertise URL. Validation and the form-to-config mapping live in `core::settings` (tested everywhere). On save the config is written atomically and the in-process delegate is restarted. macOS notes: the window temporarily switches the app to a regular (Dock) app so it gets focus, and Cmd+A/C/X/V are implemented in the page plus the system clipboard (`arboard`), because the native Edit menu did not work for this window. Verified on macOS by driving the real window (select all, paste, copy, a rejected save, an accepted save and restart). Not verified on Windows.

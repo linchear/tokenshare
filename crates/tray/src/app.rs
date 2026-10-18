@@ -1,9 +1,11 @@
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tao::event::WindowEvent;
 use tao::event::{Event, StartCause};
-use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
+use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
+use tao::window::{Window, WindowBuilder};
 use tokenshare_core::config::{default_config_path, default_data_dir};
 use tokenshare_core::daemon::{self, Running};
 use tokenshare_core::status::{health, Health};
@@ -11,8 +13,11 @@ use tokenshare_core::table::Status;
 use tokenshare_core::{AppState, Config};
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+use wry::{WebView, WebViewBuilder};
 
 use crate::icon;
+use crate::settings::{self, Message};
+use tokenshare_core::settings::{apply, Form};
 
 /// Everything the menu shows; only sent to the UI thread when it changes.
 #[derive(Clone, PartialEq)]
@@ -26,6 +31,23 @@ struct Snapshot {
 enum UserEvent {
     Snapshot(Snapshot),
     Menu(MenuEvent),
+    /// A message from the settings page.
+    Settings(String),
+}
+
+/// The running delegate as the UI sees it. It changes when settings are saved.
+#[derive(Default)]
+struct Current {
+    state: Option<Arc<AppState>>,
+    error: Option<String>,
+}
+
+type Shared = Arc<Mutex<Current>>;
+
+struct SettingsWindow {
+    // The webview must be dropped before its window.
+    webview: WebView,
+    window: Window,
 }
 
 fn label(h: Health) -> &'static str {
@@ -36,7 +58,16 @@ fn label(h: Health) -> &'static str {
     }
 }
 
-fn snapshot(s: &AppState) -> Snapshot {
+fn snapshot(current: &Shared) -> Snapshot {
+    let c = current.lock().unwrap();
+    let Some(s) = &c.state else {
+        return Snapshot {
+            health: Health::Down,
+            headline: "Token Share: not running".into(),
+            pool: c.error.clone().unwrap_or_default(),
+            peers: vec![],
+        };
+    };
     let h = health(s);
     let peers = s
         .delegates
@@ -109,23 +140,35 @@ fn config_path() -> Option<PathBuf> {
 pub fn run() {
     let data_dir = default_data_dir().unwrap_or_else(|| PathBuf::from("."));
     init_logging(&data_dir);
+    let config_path = config_path();
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-    let started: Result<Running, String> = (|| {
-        let config = match config_path() {
-            Some(p) => Config::load(&p).map_err(|e| format!("{e:#}"))?,
+    let start_cfg_path = config_path.clone();
+    let start = move |rt: &tokio::runtime::Runtime| -> Result<Running, String> {
+        let config = match &start_cfg_path {
+            Some(p) => Config::load(p).map_err(|e| format!("{e:#}"))?,
             None => Config::default(),
         };
-        rt.block_on(daemon::start(config, data_dir))
+        rt.block_on(daemon::start(config, data_dir.clone()))
             .map_err(|e| format!("{e:#}"))
-    })();
-    if let Err(e) = &started {
-        tracing::error!(error = %e, "delegate failed to start");
-    }
-    let (mut running, error) = match started {
-        Ok(r) => (Some(r), None),
-        Err(e) => (None, Some(e)),
     };
+    let mut running = match start(&rt) {
+        Ok(r) => Some(r),
+        Err(e) => {
+            tracing::error!(error = %e, "delegate failed to start");
+            None
+        }
+    };
+    let current: Shared = Arc::new(Mutex::new(Current::default()));
+    {
+        let mut c = current.lock().unwrap();
+        c.state = running.as_ref().map(|r| r.state.clone());
+        c.error = if running.is_none() {
+            Some("failed to start; see tokenshare.log".into())
+        } else {
+            None
+        };
+    }
 
     #[allow(unused_mut)]
     let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
@@ -141,31 +184,25 @@ pub fn run() {
     MenuEvent::set_event_handler(Some(move |e| {
         let _ = menu_proxy.send_event(UserEvent::Menu(e));
     }));
+    spawn_poller(current.clone(), proxy.clone());
 
-    if let Some(r) = &running {
-        spawn_poller(r.state.clone(), proxy.clone());
-    }
-
-    let headline = MenuItem::new(
-        error
-            .as_ref()
-            .map(|e| format!("Not running: {e}"))
-            .unwrap_or_else(|| "Token Share: starting".into()),
-        false,
-        None,
-    );
+    let headline = MenuItem::new("Token Share: starting", false, None);
     let pool = MenuItem::new("", false, None);
     let peers = Submenu::new("Delegates", true);
+    let settings_item = MenuItem::new("Settings…", config_path.is_some(), None);
+    let settings_id: MenuId = settings_item.id().clone();
     let quit = MenuItem::new("Quit Token Share", true, None);
     let quit_id: MenuId = quit.id().clone();
     let mut tray: Option<TrayIcon> = None;
-    let initial = if error.is_some() {
-        Health::Down
-    } else {
+    let mut settings_window: Option<SettingsWindow> = None;
+    let open_at_start = std::env::args().any(|a| a == "--open-settings");
+    let initial = if running.is_some() {
         Health::Active
+    } else {
+        Health::Down
     };
 
-    event_loop.run(move |event, _, control_flow| {
+    event_loop.run(move |event, target, control_flow| {
         *control_flow = ControlFlow::Wait;
         match event {
             // The tray icon must be created once the loop is running (macOS).
@@ -176,6 +213,8 @@ pub fn run() {
                     &pool,
                     &peers,
                     &PredefinedMenuItem::separator(),
+                    &settings_item,
+                    &PredefinedMenuItem::separator(),
                     &quit,
                 ]);
                 tray = TrayIconBuilder::new()
@@ -185,6 +224,11 @@ pub fn run() {
                     .build()
                     .map_err(|e| tracing::error!(error = %e, "cannot create tray icon"))
                     .ok();
+                if open_at_start {
+                    settings_window = open_settings(target, &proxy, &config_path)
+                        .map_err(|e| tracing::error!(error = %e, "cannot open settings"))
+                        .ok();
+                }
             }
             Event::UserEvent(UserEvent::Snapshot(s)) => {
                 headline.set_text(&s.headline);
@@ -203,7 +247,67 @@ pub fn run() {
                     let _ = t.set_tooltip(Some(&s.headline));
                 }
             }
+            Event::UserEvent(UserEvent::Menu(e)) if e.id == settings_id => match &settings_window {
+                Some(w) => w.window.set_focus(),
+                None => {
+                    settings_window = open_settings(target, &proxy, &config_path)
+                        .map_err(|e| tracing::error!(error = %e, "cannot open settings"))
+                        .ok();
+                }
+            },
+            Event::UserEvent(UserEvent::Settings(msg)) => {
+                let Some(w) = &settings_window else { return };
+                match serde_json::from_str::<Message>(&msg) {
+                    Ok(Message::Copy { text }) => {
+                        if let Err(e) = arboard::Clipboard::new().and_then(|mut c| c.set_text(text))
+                        {
+                            tracing::warn!(error = %e, "cannot write clipboard");
+                        }
+                    }
+                    Ok(Message::Paste) => {
+                        let text = arboard::Clipboard::new()
+                            .and_then(|mut c| c.get_text())
+                            .unwrap_or_default();
+                        let json = serde_json::to_string(&text).expect("string serializes");
+                        let _ = w.webview.evaluate_script(&format!("insertText({json})"));
+                    }
+                    Ok(Message::Cancel) => {
+                        settings_window = None;
+                        set_regular_app(target, false);
+                    }
+                    Ok(Message::Save { form }) => {
+                        let result = save_and_restart(
+                            &form,
+                            &config_path,
+                            &mut running,
+                            &current,
+                            &rt,
+                            &start,
+                        );
+                        match result {
+                            Ok(()) => {
+                                settings_window = None;
+                                set_regular_app(target, false);
+                            }
+                            Err(errors) => show_errors(w, &errors),
+                        }
+                    }
+                    Err(e) => tracing::warn!(error = %e, "bad message from settings page"),
+                }
+            }
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                window_id,
+                ..
+            } if settings_window
+                .as_ref()
+                .is_some_and(|w| w.window.id() == window_id) =>
+            {
+                settings_window = None;
+                set_regular_app(target, false);
+            }
             Event::UserEvent(UserEvent::Menu(e)) if e.id == quit_id => {
+                settings_window = None;
                 if let Some(r) = running.take() {
                     if let Err(e) = rt.block_on(r.stop(Duration::from_secs(5))) {
                         tracing::warn!(error = %e, "shutdown");
@@ -217,12 +321,54 @@ pub fn run() {
     });
 }
 
+/// Validate, write the config, and restart the delegate with it.
+/// Errors are returned as messages for the form.
+fn save_and_restart(
+    form: &Form,
+    config_path: &Option<PathBuf>,
+    running: &mut Option<Running>,
+    current: &Shared,
+    rt: &tokio::runtime::Runtime,
+    start: &dyn Fn(&tokio::runtime::Runtime) -> Result<Running, String>,
+) -> Result<(), Vec<String>> {
+    let path = config_path
+        .as_ref()
+        .ok_or_else(|| vec!["no config location".to_string()])?;
+    let base = Config::load(path).map_err(|e| vec![format!("{e:#}")])?;
+    let config = apply(form, &base)?;
+    config.save(path).map_err(|e| vec![format!("{e:#}")])?;
+    tracing::info!("settings saved, restarting delegate");
+
+    if let Some(r) = running.take() {
+        if let Err(e) = rt.block_on(r.stop(Duration::from_secs(5))) {
+            tracing::warn!(error = %e, "shutdown before restart");
+        }
+    }
+    current.lock().unwrap().state = None;
+    match start(rt) {
+        Ok(r) => {
+            let mut c = current.lock().unwrap();
+            c.state = Some(r.state.clone());
+            c.error = None;
+            *running = Some(r);
+            Ok(())
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "delegate failed to restart");
+            current.lock().unwrap().error = Some(e.clone());
+            Err(vec![format!(
+                "Saved, but the delegate could not start: {e}"
+            )])
+        }
+    }
+}
+
 /// Watch the delegate and tell the UI thread whenever the picture changes.
-fn spawn_poller(state: std::sync::Arc<AppState>, proxy: EventLoopProxy<UserEvent>) {
+fn spawn_poller(current: Shared, proxy: EventLoopProxy<UserEvent>) {
     std::thread::spawn(move || {
         let mut last: Option<Snapshot> = None;
         loop {
-            let now = snapshot(&state);
+            let now = snapshot(&current);
             if last.as_ref() != Some(&now) {
                 if proxy.send_event(UserEvent::Snapshot(now.clone())).is_err() {
                     return; // UI is gone
@@ -232,4 +378,59 @@ fn spawn_poller(state: std::sync::Arc<AppState>, proxy: EventLoopProxy<UserEvent
             std::thread::sleep(Duration::from_millis(500));
         }
     });
+}
+
+/// Open the settings window with the values currently on disk.
+fn open_settings(
+    target: &EventLoopWindowTarget<UserEvent>,
+    proxy: &EventLoopProxy<UserEvent>,
+    config_path: &Option<PathBuf>,
+) -> Result<SettingsWindow, String> {
+    let config = match config_path {
+        Some(p) => Config::load(p).map_err(|e| format!("{e:#}"))?,
+        None => return Err("no config location on this system".into()),
+    };
+    set_regular_app(target, true);
+    let window = WindowBuilder::new()
+        .with_title("Token Share Settings")
+        .with_inner_size(tao::dpi::LogicalSize::new(460.0, 500.0))
+        .with_resizable(false)
+        .build(target)
+        .map_err(|e| {
+            set_regular_app(target, false);
+            e.to_string()
+        })?;
+    let ipc = proxy.clone();
+    let webview = WebViewBuilder::new()
+        .with_html(settings::page(&Form::from_config(&config)))
+        .with_ipc_handler(move |req| {
+            let _ = ipc.send_event(UserEvent::Settings(req.into_body()));
+        })
+        .build(&window)
+        .map_err(|e| {
+            set_regular_app(target, false);
+            e.to_string()
+        })?;
+    window.set_focus();
+    Ok(SettingsWindow { webview, window })
+}
+
+/// While the settings window is open, behave like a regular app so it gets the
+/// menu bar (and with it Cmd+C/V/A) and proper focus; revert to menubar-only after.
+#[cfg(target_os = "macos")]
+fn set_regular_app(target: &EventLoopWindowTarget<UserEvent>, regular: bool) {
+    use tao::platform::macos::{ActivationPolicy, EventLoopWindowTargetExtMacOS};
+    target.set_activation_policy_at_runtime(if regular {
+        ActivationPolicy::Regular
+    } else {
+        ActivationPolicy::Accessory
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_regular_app(_: &EventLoopWindowTarget<UserEvent>, _: bool) {}
+
+fn show_errors(w: &SettingsWindow, errors: &[String]) {
+    let json = serde_json::to_string(errors).expect("strings serialize");
+    let _ = w.webview.evaluate_script(&format!("showErrors({json})"));
 }

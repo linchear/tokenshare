@@ -114,6 +114,15 @@ anything (no local ollama and no online peer) or failed to start. The menu
 shows state, pool usage and the delegate list. Quit waits up to 5 seconds for
 in-flight requests.
 
+**Settings.** Choose *Settings…* in the tray menu to edit the first contact,
+ollama hosts (one per line), connections to ollama, listen port and, under
+Advanced, the advertise URL. *Save & Restart* validates the values, writes the
+config file and restarts the delegate with them; requests in flight get a few
+seconds to finish. Other options (intervals, TTL, grace period) are kept as they
+are in the file, so edit it directly for those. On macOS the app shows a Dock icon
+while the window is open. The window needs WebView2 on Windows (included in
+Windows 11 and current Windows 10).
+
 `GET /_ts/status` returns the same picture as JSON: `state`, `draining`,
 `pool`, local ollama hosts and the delegate table.
 

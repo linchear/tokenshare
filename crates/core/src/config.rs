@@ -66,6 +66,22 @@ impl Config {
     }
 }
 
+impl Config {
+    /// Write to `path` atomically (temp file, then rename).
+    pub fn save(&self, path: &Path) -> Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        }
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(
+            &tmp,
+            toml::to_string_pretty(self).context("serializing config")?,
+        )
+        .with_context(|| format!("writing {}", tmp.display()))?;
+        std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
+    }
+}
+
 fn dirs() -> Option<ProjectDirs> {
     ProjectDirs::from("", "", "tokenshare")
 }
@@ -110,6 +126,27 @@ mod tests {
         assert_eq!(c.pool_size, 5);
         assert_eq!(c.fc.as_deref(), Some("http://a:1"));
         assert_eq!(c.port, 11343);
+    }
+
+    #[test]
+    fn save_then_load_round_trips() {
+        let dir = std::env::temp_dir().join(format!("ts-cfg-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("nested").join("config.toml");
+        let c = Config {
+            fc: Some("http://a:1".into()),
+            advertise_url: None,
+            pool_size: 7,
+            ollama_hosts: vec!["http://x:1".into(), "http://y:2".into()],
+            ..Config::default()
+        };
+        c.save(&path).unwrap();
+        let back = Config::load(&path).unwrap();
+        assert_eq!(
+            (back.fc, back.advertise_url, back.pool_size),
+            (c.fc, None, 7)
+        );
+        assert_eq!(back.ollama_hosts, c.ollama_hosts);
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

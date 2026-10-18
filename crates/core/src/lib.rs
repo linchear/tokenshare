@@ -4,6 +4,7 @@ pub mod mesh;
 pub mod ollama;
 pub mod pool;
 pub mod proxy;
+pub mod settings;
 pub mod status;
 pub mod table;
 

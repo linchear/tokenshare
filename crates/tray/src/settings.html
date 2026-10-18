@@ -1,0 +1,103 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Token Share Settings</title>
+<style>
+  :root { color-scheme: light dark; --bg:#fff; --fg:#1d1d1f; --muted:#6e6e73; --line:#d2d2d7; --field:#fff; --accent:#0a6cff; --err:#c4251c; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#262628; --fg:#f5f5f7; --muted:#a1a1a6; --line:#48484a; --field:#1c1c1e; --accent:#3d8bff; --err:#ff6961; } }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:20px 22px; background:var(--bg); color:var(--fg); font:13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  h1 { font-size:15px; margin:0 0 14px; }
+  label { display:block; font-weight:600; margin:12px 0 4px; }
+  .hint { color:var(--muted); font-size:12px; margin-top:3px; }
+  input, textarea { width:100%; padding:6px 8px; font:inherit; color:var(--fg); background:var(--field); border:1px solid var(--line); border-radius:6px; }
+  input:focus, textarea:focus { outline:2px solid var(--accent); outline-offset:-1px; }
+  textarea { height:66px; resize:vertical; font-family: ui-monospace, Menlo, Consolas, monospace; font-size:12px; }
+  .row { display:flex; gap:12px; } .row > div { flex:1; }
+  details { margin-top:14px; } summary { cursor:pointer; color:var(--muted); }
+  #errors { display:none; margin-top:14px; padding:8px 10px; border:1px solid var(--err); border-radius:6px; color:var(--err); }
+  #errors ul { margin:0; padding-left:18px; }
+  .actions { display:flex; justify-content:flex-end; gap:8px; margin-top:18px; }
+  button { font:inherit; padding:6px 14px; border-radius:6px; border:1px solid var(--line); background:var(--field); color:var(--fg); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button:disabled { opacity:.6; }
+</style>
+</head>
+<body>
+<h1>Token Share Settings</h1>
+<form id="f" autocomplete="off" spellcheck="false">
+  <label for="fc">First contact</label>
+  <input id="fc" placeholder="http://192.168.2.3:11343">
+  <div class="hint">Another delegate to join through at startup. Leave blank to wait for others to join you.</div>
+
+  <label for="hosts">Ollama hosts</label>
+  <textarea id="hosts" placeholder="http://localhost:11434"></textarea>
+  <div class="hint">Ollama instances reachable from this machine, one per line.</div>
+
+  <div class="row">
+    <div><label for="pool">Connections to ollama</label><input id="pool" inputmode="numeric"></div>
+    <div><label for="port">Listen port</label><input id="port" inputmode="numeric"></div>
+  </div>
+
+  <details>
+    <summary>Advanced</summary>
+    <label for="adv">Advertise URL</label>
+    <input id="adv" placeholder="detected automatically">
+    <div class="hint">How other delegates reach this machine. Set it only if the detected address is wrong, for example behind NAT.</div>
+  </details>
+
+  <div id="errors"><ul></ul></div>
+  <div class="hint" style="margin-top:14px">Saving restarts this delegate. Requests in progress get a few seconds to finish.</div>
+  <div class="actions">
+    <button type="button" id="cancel">Cancel</button>
+    <button type="submit" id="save" class="primary">Save &amp; Restart</button>
+  </div>
+</form>
+<script>
+  const $ = id => document.getElementById(id);
+  const init = /*INITIAL*/null;
+  $('fc').value = init.fc; $('hosts').value = init.ollama_hosts; $('pool').value = init.pool_size;
+  $('port').value = init.port; $('adv').value = init.advertise_url;
+  if (init.advertise_url) $('adv').closest('details').open = true;
+  function send(m) { window.ipc.postMessage(JSON.stringify(m)); }
+  function showErrors(list) {
+    const box = $('errors'), ul = box.querySelector('ul');
+    ul.replaceChildren(...list.map(t => Object.assign(document.createElement('li'), { textContent: t })));
+    box.style.display = list.length ? 'block' : 'none';
+    $('save').disabled = false; $('save').textContent = 'Save & Restart';
+  }
+  $('cancel').onclick = () => send({ cmd: 'cancel' });
+  $('f').onsubmit = e => {
+    e.preventDefault();
+    $('save').disabled = true; $('save').textContent = 'Restarting…';
+    send({ cmd: 'save', form: { fc: $('fc').value, advertise_url: $('adv').value,
+      ollama_hosts: $('hosts').value, port: $('port').value, pool_size: $('pool').value } });
+  };
+  // WKWebView in an app without a working Edit menu ignores Cmd+A/C/X/V, so on
+  // macOS we do them ourselves. Copy and paste go through the host's clipboard.
+  const isMac = /Mac/.test(navigator.platform);
+  function insertText(t) {
+    const el = document.activeElement;
+    if (el && el.setRangeText) {
+      el.setRangeText(t, el.selectionStart, el.selectionEnd, 'end');
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  }
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { send({ cmd: 'cancel' }); return; }
+    const el = e.target;
+    if (!isMac || !e.metaKey || !/^(INPUT|TEXTAREA)$/.test(el.tagName)) return;
+    const k = e.key.toLowerCase();
+    if (k === 'a') { e.preventDefault(); el.select(); }
+    else if (k === 'c' || k === 'x') {
+      e.preventDefault();
+      const text = el.value.substring(el.selectionStart, el.selectionEnd);
+      if (text) send({ cmd: 'copy', text });
+      if (k === 'x') insertText('');
+    } else if (k === 'v') { e.preventDefault(); send({ cmd: 'paste' }); }
+  });
+  $('fc').focus();
+</script>
+</body>
+</html>
