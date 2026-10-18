@@ -268,6 +268,12 @@ pub fn run() {
                             tracing::warn!(error = %e, "cannot write clipboard");
                         }
                     }
+                    Ok(Message::Resize { height }) => {
+                        // Title bar is outside the inner size; clamp to something sane.
+                        let h = height.clamp(300.0, 900.0);
+                        w.window
+                            .set_inner_size(tao::dpi::LogicalSize::new(460.0, h));
+                    }
                     Ok(Message::Paste) => {
                         let text = arboard::Clipboard::new()
                             .and_then(|mut c| c.get_text())

@@ -65,12 +65,15 @@
   $('fc').value = init.fc; $('hosts').value = init.ollama_hosts; $('pool').value = init.pool_size;
   $('port').value = init.port; $('share').checked = init.share_with_peers; $('adv').value = init.advertise_url;
   if (init.advertise_url) $('adv').closest('details').open = true;
+  // Ask the host to fit the window to the content so it never needs a scrollbar.
+  function fit() { send({ cmd: 'resize', height: Math.ceil(document.body.scrollHeight) }); }
   function send(m) { window.ipc.postMessage(JSON.stringify(m)); }
   function showErrors(list) {
     const box = $('errors'), ul = box.querySelector('ul');
     ul.replaceChildren(...list.map(t => Object.assign(document.createElement('li'), { textContent: t })));
     box.style.display = list.length ? 'block' : 'none';
     $('save').disabled = false; $('save').textContent = 'Save & Restart';
+    fit();
   }
   $('cancel').onclick = () => send({ cmd: 'cancel' });
   $('f').onsubmit = e => {
@@ -102,6 +105,8 @@
       if (k === 'x') insertText('');
     } else if (k === 'v') { e.preventDefault(); send({ cmd: 'paste' }); }
   });
+  document.querySelector('details').addEventListener('toggle', fit);
+  window.addEventListener('load', fit);
   $('fc').focus();
 </script>
 </body>

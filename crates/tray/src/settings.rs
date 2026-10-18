@@ -26,6 +26,10 @@ pub enum Message {
     },
     /// Ask for the clipboard text (Cmd+V); answered with `insertText(...)`.
     Paste,
+    /// The page's content height in logical pixels; the window follows it.
+    Resize {
+        height: f64,
+    },
 }
 
 #[cfg(test)]
@@ -43,6 +47,12 @@ mod tests {
         assert!(!html.contains("/*INITIAL*/"));
         assert!(html.contains("http://a:1/<\\/script><b>"));
         assert!(html.contains("\"port\":\"11343\""));
+    }
+
+    #[test]
+    fn resize_message_parses() {
+        let m: Message = serde_json::from_str(r#"{"cmd":"resize","height":523}"#).unwrap();
+        assert!(matches!(m, Message::Resize { height } if height == 523.0));
     }
 
     #[test]
