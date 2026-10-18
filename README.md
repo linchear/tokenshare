@@ -128,6 +128,16 @@ Windows 11 and current Windows 10).
 `GET /_ts/status` returns the same picture as JSON: `state`, `draining`,
 `pool`, local ollama hosts and the delegate table.
 
+## App icon
+
+A blue squircle with a mesh of three linked nodes and a gold token in the middle;
+more tokens travel along the links. It is drawn in code
+(`crates/tray/examples/app_icon.rs`), and the generated assets are committed:
+`packaging/macos/AppIcon.icns` (bundled by `build-app.sh`) and
+`crates/tray/icon.ico` (embedded in `tokenshare-tray.exe` by `crates/tray/build.rs`).
+After changing the artwork, run `packaging/icon/generate.sh` on a Mac. This is
+separate from the small status icons in the menubar/taskbar.
+
 ## Shutdown
 
 On SIGINT/SIGTERM (or Quit in the tray) a delegate stops gossiping, refuses new
