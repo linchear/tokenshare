@@ -164,3 +164,16 @@ Layout: `crates/core` (library: proxy, delegate table, mesh protocol, daemon
 startup, health), `crates/tokenshare` (headless daemon), `crates/tray`
 (menubar/taskbar app; a stub on Linux). Design notes are in `design/`;
 `design/plan.md` records the decisions and what was built.
+
+## Building for Windows from macOS or Linux
+
+```bash
+brew install mingw-w64            # or your distro's mingw-w64 package
+rustup target add x86_64-pc-windows-gnu
+cargo build --release --target x86_64-pc-windows-gnu -p tokenshare-tray -p tokenshare
+```
+
+Ship `tokenshare-tray.exe` together with `WebView2Loader.dll`, which the build
+leaves in `target/x86_64-pc-windows-gnu/release/build/webview2-com-sys-*/out/x64/`.
+Cross-built binaries have not been run on Windows by the author of this note;
+CI builds natively on `windows-latest`.
