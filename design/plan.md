@@ -143,3 +143,7 @@ Health is four states: green (a model is available, idle), blue (a request in fl
 ## Post-M4: configurable ollama port
 
 `ollama_port` (default 11434, `--ollama-port`, an *Ollama port* field under *Advanced* in Settings) is the port ollama clients use while masquerading. `Config::listeners` binds it (as `Face::Ollama`) next to the tokenshare `port` (`Face::Mesh`). Settings validate it (1-65535) and refuse it equalling `port` while masquerading, and the checkbox label and the "this is ollama's own port" warning follow the field (the warning only shows for 11434). Because it can now avoid 11434, `daemon::start` is tested end to end with two free ports, including a busy ollama port leaving nothing half-started.
+
+## Post-M4: masquerading no longer implies not sharing
+
+Corrects the two-port change: masquerade does not force sharing off (`Config::shares_models` is just `share_with_peers`), because the ollama hosts may be other boxes on the network that the user wants to lend. On the tokenshare port (`Face::Mesh`) a forwarded request (one carrying the visited header) is served from the local hosts when sharing is on, and refused with 503 when it is off; a direct request still gets no local ollama (a delegate with no models) and forwards to peers, as before. `/api/tags` and the passthrough endpoints on that port also stay peers-only. The advertised models follow `share_with_peers`. The share checkbox in Settings is only greyed out when there are no hosts.

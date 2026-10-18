@@ -73,9 +73,10 @@ impl Default for Config {
 pub enum Face {
     /// The ollama API: serves from the local ollama and the pool.
     Ollama,
-    /// The tokenshare port when masquerading: a delegate with no models. It
-    /// joins and gossips with other delegates, and forwards requests to them,
-    /// but never serves from (or lists) the local ollama.
+    /// The tokenshare port when masquerading: the delegates' port. Other
+    /// delegates' (forwarded) requests are served from the local ollama hosts
+    /// when sharing is on, but direct clients on it get no local ollama: it
+    /// acts as a delegate with no models and forwards to other delegates.
     Mesh,
 }
 
@@ -114,10 +115,11 @@ impl Config {
         self.listeners().iter().map(|l| l.port).collect()
     }
 
-    /// Whether other delegates may use this machine's ollama. Masquerading
-    /// implies not: peers reach it on the mesh port, which has no models.
+    /// Whether other delegates may use this machine's ollama hosts. Independent
+    /// of `masquerade`: a masquerading machine can still lend its hosts, which
+    /// peers reach on the tokenshare port.
     pub fn shares_models(&self) -> bool {
-        self.share_with_peers && !self.masquerade
+        self.share_with_peers
     }
 
     /// Configured ollama hosts that are really this delegate (a loopback address
@@ -274,9 +276,14 @@ mod tests {
         );
         assert_eq!(c.listen_ports(), vec![12000, 11434]);
         assert!(
-            !c.shares_models(),
-            "peers get no models from a masquerading machine"
+            c.shares_models(),
+            "masquerading does not stop sharing with peers"
         );
+        assert!(!Config {
+            share_with_peers: false,
+            ..c.clone()
+        }
+        .shares_models());
         assert_eq!(c.port, 12000, "the tokenshare port is unchanged");
     }
 

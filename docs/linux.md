@@ -183,12 +183,13 @@ With `masquerade = true` (or `--masquerade`) the delegate listens on **two**
 ports: the **ollama port** (`ollama_port`, 11434 by default, which is ollama's
 own), so apps already pointed at `localhost:11434` use the pool with no changes;
 and the tokenshare port
-(`port`, 11343 by default), which is how other delegates reach it. The
-tokenshare port acts as a delegate with **no models**: this machine still joins
-the pool and shows up in other delegates' tables, and requests arriving on that
-port are forwarded to other delegates, but are never served from your local
-ollama. So a masquerading machine uses the pool without lending its own ollama
-to it. Open 11343 in the firewall for other machines as usual; the ollama port only
+(`port`, 11343 by default), which is how other delegates reach it. Requests that
+other delegates forward to the tokenshare port are served from your ollama hosts
+while sharing is on (the default), so a masquerading machine, and any other
+ollama boxes you list as hosts, still lend their models to the pool. Apps that
+connect to the tokenshare port directly are not served from your hosts; for
+them it acts as a delegate with **no models** and forwards to other delegates.
+Use the ollama port for your own apps. Open 11343 in the firewall for other machines as usual; the ollama port only
 needs to be reachable by your own clients.
 
 If you would rather leave a local ollama on 11434, give the delegate another
@@ -235,7 +236,7 @@ or `tokenshare --client-only`.
 
 Set `share_with_peers = false` so other machines no longer see your models or
 send you requests. You still use your own ollama and the rest of the pool.
-While `masquerade` is on this is always the case, whatever `share_with_peers` says.
+This works the same while masquerading.
 
 ## Check that it works
 

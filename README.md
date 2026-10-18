@@ -67,7 +67,7 @@ A TOML file; every key is optional. Command-line flags override it.
 | `advertise_url` | learned | How peers reach this delegate (learned from the first delegate it joins) |
 | `ollama_hosts` | `["http://localhost:11434"]` | Ollama instances reachable from this machine. Optional: `[]` makes a client-only delegate |
 | `pool_size` | `3` | Max concurrent requests to ollama |
-| `share_with_peers` | `true` | Let other delegates use this machine's ollama (see below). Always off while masquerading |
+| `share_with_peers` | `true` | Let other delegates use this machine's ollama (see below). |
 | `poll_interval_secs` | `10` | How often to refresh local models |
 | `rejoin_retry_secs` | `300` | Wait before retrying when no delegate answered |
 | `keepalive_interval_secs` | `30` | Keepalive period |
@@ -130,14 +130,18 @@ checkbox, or `--masquerade`) the delegate listens on **two** ports:
   under *Advanced* in Settings), with the full behavior: apps already pointed
   at ollama use the local ollama and the pool with no changes.
 - **`port`** (11343 by default), the tokenshare port, which is how other
-  delegates reach it. This port acts as a delegate with **no models**: the
-  machine joins, gossips and appears in other delegates' tables, and requests
-  that arrive on it are forwarded to other delegates like a client-only
-  delegate's, but they are never served from (or listed from) the local ollama.
+  delegates reach it. Requests that other delegates forward to it are served
+  from your ollama hosts (when *Share my ollama with other delegates* is on, the
+  default), so a masquerading machine, and any other ollama boxes on your
+  network that you list as hosts, can still lend their models to the pool.
+  Apps that connect to this port directly are not served from your hosts: it
+  acts as a delegate with **no models** for them, forwarding to other delegates
+  like a client-only delegate. Your own apps use the ollama port.
 
-A masquerading machine therefore does not lend its ollama to others (the status
-endpoint reports `"sharing": false`), and the delegate advertises itself on the
-tokenshare port even if another delegate joined it through 11434.
+Turn sharing off to keep the hosts private: the machine still joins and
+gossips, but advertises no models and refuses forwarded requests. In both
+cases the delegate advertises itself on the tokenshare port even if another
+delegate joined it through the ollama port.
 
 11434 is also the port a local ollama uses, so you cannot run both on it. Either
 start ollama on another port (for example `OLLAMA_HOST=127.0.0.1:11435`) and

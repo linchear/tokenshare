@@ -80,9 +80,10 @@ Overrides
 Also listen on the ollama port (11434 unless
 .B \-\-ollama\-port
 is given), so applications already pointed at ollama use the pool unchanged.
-The tokenshare port stays open for other delegates and acts as a delegate with
-no models: requests arriving there are forwarded to other delegates and never
-served from the local ollama, and this machine's models are not advertised.
+The tokenshare port stays open for other delegates: requests they forward to it
+are served from the ollama hosts while sharing is on, but applications that
+connect to it directly get a delegate with no models, which forwards to other
+delegates.
 Move the local ollama to another port first, for example
 .BR "OLLAMA_HOST=127.0.0.1:11435" ,
 and list that address as the ollama host.
@@ -115,7 +116,7 @@ Also listen on
 .BR ollama_port ,
 for ollama clients.
 .B port
-then serves other delegates only, as a delegate with no models.
+then serves other delegates (and clients get no local models there).
 Default false.
 .TP
 .B ollama_port
@@ -143,7 +144,8 @@ Default 3.
 .B share_with_peers
 When false, other delegates see this machine as serving nothing and their
 forwarded requests are refused, while local use is unchanged.
-Always off while
+Applies the same
+while
 .B masquerade
 is on.
 Default true.

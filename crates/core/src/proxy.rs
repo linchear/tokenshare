@@ -303,16 +303,18 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
     let start = Instant::now();
     let (parts, body) = req.into_parts();
     let path = parts.uri.path().to_string();
-    // A mesh-only listener behaves as a delegate with no models of its own.
+    // On the tokenshare port of a masquerading delegate, direct clients get a
+    // delegate with no models of its own; only other delegates' forwarded
+    // requests (below) may use the local ollama hosts.
     let face = parts
         .extensions
         .get::<Face>()
         .copied()
         .unwrap_or(Face::Ollama);
-    let has_local = face == Face::Ollama;
+    let on_ollama_port = face == Face::Ollama;
 
     if parts.method == Method::GET && path == "/api/tags" {
-        return tags(&s, has_local);
+        return tags(&s, on_ollama_port);
     }
 
     let bytes = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
@@ -334,7 +336,7 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
 
     if !INFERENCE_PATHS.contains(&path.as_str()) {
         // Everything else (pull, show, version, ...) is local ollama only.
-        let Some(host) = s.table.first_up().filter(|_| has_local) else {
+        let Some(host) = s.table.first_up().filter(|_| on_ollama_port) else {
             return error(StatusCode::SERVICE_UNAVAILABLE, "no local ollama available");
         };
         return match out.send(format!("{host}{path_and_query}"), None).await {
@@ -378,6 +380,8 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
     };
 
     // 1. Serve locally if we have the model and a free pool slot.
+    // (A forwarded request got here past the sharing check above.)
+    let has_local = on_ollama_port || forwarded;
     let local_host = s.table.host_for_model(&model).filter(|_| has_local);
     if let Some(host) = &local_host {
         if let Some(permit) = s.pool.try_acquire() {
