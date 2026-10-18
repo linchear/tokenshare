@@ -214,11 +214,10 @@ ollama_hosts = []
 
 or `tokenshare --client-only`.
 
-### Contribute your ollama without using others'
+### Keep your ollama to yourself
 
-To stop other machines using yours while you still use the pool, set
-`share_with_peers = false`. To do the opposite and only lend yours, run the
-daemon normally and point your clients at local ollama instead.
+Set `share_with_peers = false` so other machines no longer see your models or
+send you requests. You still use your own ollama and the rest of the pool.
 
 ## Check that it works
 
