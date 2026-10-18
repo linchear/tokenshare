@@ -172,10 +172,10 @@ startup, health), `crates/tokenshare` (headless daemon), `crates/tray`
 ```bash
 brew install mingw-w64            # or your distro's mingw-w64 package
 rustup target add x86_64-pc-windows-gnu
-cargo build --release --target x86_64-pc-windows-gnu -p tokenshare-tray -p tokenshare
+packaging/windows/build-from-unix.sh
 ```
 
-Ship `tokenshare-tray.exe` together with `WebView2Loader.dll`, which the build
-leaves in `target/x86_64-pc-windows-gnu/release/build/webview2-com-sys-*/out/x64/`.
-Cross-built binaries have not been run on Windows by the author of this note;
-CI builds natively on `windows-latest`.
+This writes `target/x86_64-pc-windows-gnu/tokenshare-windows-x64.zip` containing
+`tokenshare-tray.exe`, `tokenshare.exe` and `WebView2Loader.dll` (keep the DLL next
+to the tray exe). The binaries have not been run on Windows; CI builds natively on
+`windows-latest`.
