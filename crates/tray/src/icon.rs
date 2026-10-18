@@ -16,6 +16,7 @@ pub fn emoji(health: Health) -> &'static str {
     match health {
         Health::Active => "✅",
         Health::InUse => "⚡",
+        Health::NoModels => "⚠️",
         Health::Down => "❌",
     }
 }
@@ -27,6 +28,7 @@ fn palette(health: Health) -> ([f32; 3], [f32; 3]) {
     match health {
         Health::Active => ([76.0, 217.0, 100.0], [30.0, 140.0, 62.0]),
         Health::InUse => ([90.0, 170.0, 255.0], [20.0, 90.0, 220.0]),
+        Health::NoModels => ([255.0, 216.0, 72.0], [232.0, 150.0, 0.0]),
         Health::Down => ([255.0, 112.0, 98.0], [196.0, 37.0, 28.0]),
     }
 }
@@ -65,6 +67,9 @@ fn polygon_sdf(p: P, pts: &[P]) -> f32 {
 const CHECK: [P; 3] = [(0.27, 0.52), (0.43, 0.68), (0.74, 0.33)];
 const CROSS_A: [P; 2] = [(0.34, 0.34), (0.66, 0.66)];
 const CROSS_B: [P; 2] = [(0.66, 0.34), (0.34, 0.66)];
+/// Exclamation mark: a bar and a dot.
+const BAR: [P; 2] = [(0.5, 0.25), (0.5, 0.53)];
+const DOT: P = (0.5, 0.74);
 const BOLT: [P; 6] = [
     (0.60, 0.11),
     (0.27, 0.56),
@@ -80,6 +85,17 @@ fn glyph_sdf(health: Health, p: P) -> f32 {
         Health::Active => polyline_dist(p, &CHECK) - 0.065,
         Health::Down => polyline_dist(p, &CROSS_A).min(polyline_dist(p, &CROSS_B)) - 0.065,
         Health::InUse => polygon_sdf(p, &BOLT) - 0.012,
+        Health::NoModels => {
+            let dot = ((p.0 - DOT.0).powi(2) + (p.1 - DOT.1).powi(2)).sqrt() - 0.068;
+            (polyline_dist(p, &BAR) - 0.058).min(dot)
+        }
+    }
+}
+
+fn glyph_color(health: Health) -> [f32; 3] {
+    match health {
+        Health::NoModels => [78.0, 48.0, 0.0],
+        _ => [255.0; 3],
     }
 }
 
@@ -109,11 +125,15 @@ fn sample(health: Health, p: P, px: f32) -> [f32; 4] {
     let gloss = ((0.5 - p.1) * 2.0).clamp(0.0, 1.0) * (1.0 - (r / 0.45).clamp(0.0, 1.0)) * 0.22;
     c = lerp(c, [255.0; 3], gloss);
 
-    // Symbol: a soft shadow just below it, then the white glyph.
-    let shadow = ((-glyph_sdf(health, (p.0, p.1 - 0.025)) / 0.03) + 0.5).clamp(0.0, 1.0) * 0.30;
-    c = lerp(c, [0.0; 3], shadow);
+    // Symbol: white on green/blue/red, dark on yellow (as on a warning sign).
+    // White glyphs get a soft shadow just below them.
+    let ink = glyph_color(health);
+    if ink[0] > 200.0 {
+        let shadow = ((-glyph_sdf(health, (p.0, p.1 - 0.025)) / 0.03) + 0.5).clamp(0.0, 1.0) * 0.30;
+        c = lerp(c, [0.0; 3], shadow);
+    }
     let g = (-glyph_sdf(health, p) / px + 0.5).clamp(0.0, 1.0);
-    c = lerp(c, [255.0; 3], g);
+    c = lerp(c, ink, g);
     [c[0] * cover, c[1] * cover, c[2] * cover, 255.0 * cover]
 }
 
@@ -160,7 +180,12 @@ pub fn render(health: Health, size: u32) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    const ALL: [Health; 3] = [Health::Active, Health::InUse, Health::Down];
+    const ALL: [Health; 4] = [
+        Health::Active,
+        Health::InUse,
+        Health::NoModels,
+        Health::Down,
+    ];
 
     fn px(buf: &[u8], size: u32, u: f32, v: f32) -> [u8; 4] {
         let (x, y) = ((u * size as f32) as u32, (v * size as f32) as u32);
@@ -196,6 +221,13 @@ mod tests {
         assert!(is_white(px(&bolt, 64, 0.50, 0.50)), "bolt body");
         assert!(!is_white(px(&bolt, 64, 0.20, 0.20)));
 
+        let warn = render(Health::NoModels, 64);
+        let dark = |p: [u8; 4]| p[3] == 255 && p[0] < 110 && p[1] < 80;
+        assert!(dark(px(&warn, 64, 0.50, 0.40)), "exclamation bar");
+        assert!(dark(px(&warn, 64, 0.50, 0.74)), "exclamation dot");
+        assert!(!dark(px(&warn, 64, 0.50, 0.63)), "gap between bar and dot");
+        assert!(!is_white(px(&warn, 64, 0.50, 0.40)));
+
         let cross = render(Health::Down, 64);
         assert!(is_white(px(&cross, 64, 0.50, 0.50)), "cross center");
         assert!(is_white(px(&cross, 64, 0.40, 0.40)));
@@ -207,10 +239,11 @@ mod tests {
 
     #[test]
     fn badge_colors_are_green_blue_red() {
-        let [g, b, r] = [Health::Active, Health::InUse, Health::Down].map(|h| {
+        let [g, b, y, r] = ALL.map(|h| {
             let buf = render(h, 64);
             px(&buf, 64, 0.5, 0.88)
         });
+        assert!(y[0] > 200 && y[1] > 120 && y[2] < 60, "yellow {y:?}");
         assert!(g[1] > g[0] && g[1] > g[2], "green {g:?}");
         assert!(b[2] > b[0] && b[2] > b[1], "blue {b:?}");
         assert!(r[0] > r[1] && r[0] > r[2], "red {r:?}");
@@ -218,7 +251,7 @@ mod tests {
 
     #[test]
     fn emoji_differ_per_state() {
-        assert_eq!(ALL.map(emoji), ["✅", "⚡", "❌"]);
+        assert_eq!(ALL.map(emoji), ["✅", "⚡", "⚠️", "❌"]);
     }
 
     /// `ICON_PREVIEW=/path/sheet.png cargo test -p tokenshare-tray preview` writes
@@ -228,7 +261,7 @@ mod tests {
         let Ok(path) = std::env::var("ICON_PREVIEW") else {
             return;
         };
-        let (cell, w, h) = (96u32, 96 * 3, 96 * 2);
+        let (cell, w, h) = (96u32, 96 * 4, 96 * 2);
         let mut img = vec![255u8; (w * h * 4) as usize];
         for (row, bg) in [[30u8, 30, 32], [236, 236, 238]].into_iter().enumerate() {
             for (col, health) in ALL.into_iter().enumerate() {

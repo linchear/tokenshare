@@ -54,6 +54,7 @@ fn label(h: Health) -> String {
     let text = match h {
         Health::Active => "Active",
         Health::InUse => "In use",
+        Health::NoModels => "No models available",
         Health::Down => "Down",
     };
     format!("{} {text}", icon::emoji(h))

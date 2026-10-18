@@ -12,23 +12,32 @@ pub enum Health {
     Active,
     /// Blue: at least one request in flight, served here or forwarded.
     InUse,
-    /// Red: cannot serve anything, locally or through a peer.
+    /// Yellow: no model is available anywhere, but other delegates are online,
+    /// so requests will work again as soon as some ollama comes back.
+    NoModels,
+    /// Red: no model is available and no other delegate is online.
     Down,
 }
 
+/// Can this delegate get a request answered? Only if some model is available:
+/// on its own ollama, or on a peer that is online. A reachable ollama or an
+/// online peer with no models does not count. With no model anywhere, the
+/// mesh being alive (some peer online) is yellow; being alone is red.
 pub fn health(s: &AppState) -> Health {
-    let local_up = s.table.first_up().is_some();
-    let peer_online = s
-        .delegates
-        .peers()
-        .iter()
-        .any(|p| p.status == Status::Online);
-    if !local_up && !peer_online {
-        Health::Down
-    } else if s.pool.active() > 0 {
-        Health::InUse
+    let local_ready = !s.table.all_models().is_empty();
+    let peers = s.delegates.peers();
+    let online = |p: &&crate::table::DelegateEntry| p.status == Status::Online;
+    let peer_ready = peers.iter().filter(online).any(|p| !p.models.is_empty());
+    if local_ready || peer_ready {
+        if s.pool.active() > 0 {
+            Health::InUse
+        } else {
+            Health::Active
+        }
+    } else if peers.iter().any(|p| online(&p)) {
+        Health::NoModels
     } else {
-        Health::Active
+        Health::Down
     }
 }
 
