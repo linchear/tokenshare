@@ -55,7 +55,7 @@ fn label(h: Health) -> String {
         Health::Active => "Active",
         Health::InUse => "In use",
         Health::NoModels => "No models available",
-        Health::Down => "Down",
+        Health::Down => "Unavailable",
     };
     format!("{} {text}", icon::emoji(h))
 }

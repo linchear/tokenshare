@@ -116,8 +116,8 @@ alone: a green **check** (✅) when a model is available and the delegate is idl
 blue **lightning bolt** (⚡) while any request is in flight (served here or
 forwarded), a yellow **exclamation mark** (⚠️) when no model is available anywhere
 but other delegates are online (it turns green by itself when some ollama comes
-back), and a red **cross** (❌) when no model is available and no other delegate
-is online, or the delegate failed to start. "Available" means a model listed by
+back), and a gray **pause** mark (⏸️) when no model is available and no other delegate
+is online, or the delegate failed to start (the menu says "Unavailable"). "Available" means a model listed by
 this machine's ollama or by an online peer; a reachable ollama with nothing
 installed does not count. The menu
 shows state, pool usage and the delegate list. Quit waits up to 5 seconds for

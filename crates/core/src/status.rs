@@ -15,7 +15,7 @@ pub enum Health {
     /// Yellow: no model is available anywhere, but other delegates are online,
     /// so requests will work again as soon as some ollama comes back.
     NoModels,
-    /// Red: no model is available and no other delegate is online.
+    /// Gray: unavailable. No model is available and no other delegate is online.
     Down,
 }
 

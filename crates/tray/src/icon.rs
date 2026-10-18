@@ -1,6 +1,7 @@
 //! Tray icons: a glossy round badge with a white symbol that says what is going
 //! on without relying on color alone: a check (active), a lightning bolt (in
-//! use), a cross (down). Drawn in code so there are no assets to ship.
+//! use), an exclamation mark (no models), pause bars (unavailable). Drawn in code
+//! so there are no assets to ship.
 
 use tokenshare_core::status::Health;
 
@@ -17,7 +18,7 @@ pub fn emoji(health: Health) -> &'static str {
         Health::Active => "✅",
         Health::InUse => "⚡",
         Health::NoModels => "⚠️",
-        Health::Down => "❌",
+        Health::Down => "⏸️",
     }
 }
 
@@ -29,7 +30,8 @@ fn palette(health: Health) -> ([f32; 3], [f32; 3]) {
         Health::Active => ([76.0, 217.0, 100.0], [30.0, 140.0, 62.0]),
         Health::InUse => ([90.0, 170.0, 255.0], [20.0, 90.0, 220.0]),
         Health::NoModels => ([255.0, 216.0, 72.0], [232.0, 150.0, 0.0]),
-        Health::Down => ([255.0, 112.0, 98.0], [196.0, 37.0, 28.0]),
+        // A calm slate gray: unavailable is not an alarm.
+        Health::Down => ([164.0, 172.0, 186.0], [104.0, 114.0, 130.0]),
     }
 }
 
@@ -65,8 +67,9 @@ fn polygon_sdf(p: P, pts: &[P]) -> f32 {
 }
 
 const CHECK: [P; 3] = [(0.27, 0.52), (0.43, 0.68), (0.74, 0.33)];
-const CROSS_A: [P; 2] = [(0.34, 0.34), (0.66, 0.66)];
-const CROSS_B: [P; 2] = [(0.66, 0.34), (0.34, 0.66)];
+/// Pause: two rounded bars.
+const PAUSE_L: [P; 2] = [(0.375, 0.34), (0.375, 0.66)];
+const PAUSE_R: [P; 2] = [(0.625, 0.34), (0.625, 0.66)];
 /// Exclamation mark: a bar and a dot.
 const BAR: [P; 2] = [(0.5, 0.25), (0.5, 0.53)];
 const DOT: P = (0.5, 0.74);
@@ -83,7 +86,9 @@ const BOLT: [P; 6] = [
 fn glyph_sdf(health: Health, p: P) -> f32 {
     match health {
         Health::Active => polyline_dist(p, &CHECK) - 0.065,
-        Health::Down => polyline_dist(p, &CROSS_A).min(polyline_dist(p, &CROSS_B)) - 0.065,
+        Health::Down => {
+            seg_dist(p, PAUSE_L[0], PAUSE_L[1]).min(seg_dist(p, PAUSE_R[0], PAUSE_R[1])) - 0.062
+        }
         Health::InUse => polygon_sdf(p, &BOLT) - 0.012,
         Health::NoModels => {
             let dot = ((p.0 - DOT.0).powi(2) + (p.1 - DOT.1).powi(2)).sqrt() - 0.068;
@@ -125,7 +130,7 @@ fn sample(health: Health, p: P, px: f32) -> [f32; 4] {
     let gloss = ((0.5 - p.1) * 2.0).clamp(0.0, 1.0) * (1.0 - (r / 0.45).clamp(0.0, 1.0)) * 0.22;
     c = lerp(c, [255.0; 3], gloss);
 
-    // Symbol: white on green/blue/red, dark on yellow (as on a warning sign).
+    // Symbol: white on green/blue/gray, dark on yellow (as on a warning sign).
     // White glyphs get a soft shadow just below them.
     let ink = glyph_color(health);
     if ink[0] > 200.0 {
@@ -228,17 +233,18 @@ mod tests {
         assert!(!dark(px(&warn, 64, 0.50, 0.63)), "gap between bar and dot");
         assert!(!is_white(px(&warn, 64, 0.50, 0.40)));
 
-        let cross = render(Health::Down, 64);
-        assert!(is_white(px(&cross, 64, 0.50, 0.50)), "cross center");
-        assert!(is_white(px(&cross, 64, 0.40, 0.40)));
+        let pause = render(Health::Down, 64);
+        assert!(is_white(px(&pause, 64, 0.375, 0.50)), "left bar");
+        assert!(is_white(px(&pause, 64, 0.625, 0.50)), "right bar");
         assert!(
-            !is_white(px(&cross, 64, 0.50, 0.30)),
-            "gap between the arms"
+            !is_white(px(&pause, 64, 0.50, 0.50)),
+            "gap between the bars"
         );
+        assert!(!is_white(px(&pause, 64, 0.375, 0.20)), "bars are short");
     }
 
     #[test]
-    fn badge_colors_are_green_blue_red() {
+    fn badge_colors_are_green_blue_yellow_gray() {
         let [g, b, y, r] = ALL.map(|h| {
             let buf = render(h, 64);
             px(&buf, 64, 0.5, 0.88)
@@ -246,12 +252,14 @@ mod tests {
         assert!(y[0] > 200 && y[1] > 120 && y[2] < 60, "yellow {y:?}");
         assert!(g[1] > g[0] && g[1] > g[2], "green {g:?}");
         assert!(b[2] > b[0] && b[2] > b[1], "blue {b:?}");
-        assert!(r[0] > r[1] && r[0] > r[2], "red {r:?}");
+        // Gray: nearly equal channels, mid brightness (not red, so not alarming).
+        let spread = r[0].abs_diff(r[1]).max(r[1].abs_diff(r[2]));
+        assert!(spread < 40 && r[0] > 90 && r[0] < 190, "gray {r:?}");
     }
 
     #[test]
     fn emoji_differ_per_state() {
-        assert_eq!(ALL.map(emoji), ["✅", "⚡", "⚠️", "❌"]);
+        assert_eq!(ALL.map(emoji), ["✅", "⚡", "⚠️", "⏸️"]);
     }
 
     /// `ICON_PREVIEW=/path/sheet.png cargo test -p tokenshare-tray preview` writes
