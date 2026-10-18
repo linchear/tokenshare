@@ -74,6 +74,7 @@ A TOML file; every key is optional. Command-line flags override it.
 | `keepalive_ttl` | `3` | Extra relay hops per keepalive |
 | `sync_interval_secs` | `60` | Full table pull period |
 | `shutdown_grace_secs` | `30` | How long to let in-flight requests finish on shutdown |
+| `peer_expiry_secs` | `86400` | Drop delegates not heard from for this long; `0` keeps them forever (see below) |
 
 ```toml
 fc = "http://192.168.2.3:11343"
@@ -207,6 +208,24 @@ more tokens travel along the links. It is drawn in code
 `crates/tray/icon.ico` (embedded in `tokenshare-tray.exe` by `crates/tray/build.rs`).
 After changing the artwork, run `packaging/icon/generate.sh` on a Mac. This is
 separate from the small status icons in the menubar/taskbar.
+
+## Stale delegates
+
+- **Our own address.** A delegate never reuses its own address from the saved
+  table. It uses `advertise_url` if set, otherwise it learns it again from the
+  delegate it joins. A wrong address would otherwise be handed to every peer and
+  stay wrong across restarts.
+- **Expiry.** A live delegate refreshes its `last_seen` with every keepalive, so
+  one not heard from for `peer_expiry_secs` (a day by default) is dead. Each
+  delegate drops such entries after a successful table sync and also refuses to
+  take them back from others' gossip, so a dead delegate ages out of the whole
+  mesh instead of circulating forever. A delegate that was only offline for a
+  while returns by rejoining.
+- **Forget.** In the tray menu, under *Delegates*, each delegate has *Forget this
+  delegate*. It is removed and kept out (the choice is saved in
+  `forgotten.json`) until it is heard from again with a newer `last_seen`, so
+  forgetting a dead one sticks while forgetting one that is alive only lasts
+  until its next keepalive.
 
 ## Shutdown
 

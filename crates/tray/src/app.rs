@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -25,7 +26,14 @@ struct Snapshot {
     health: Health,
     headline: String,
     pool: String,
-    peers: Vec<String>,
+    peers: Vec<PeerRow>,
+}
+
+/// One delegate in the menu: its id (for Forget) and what to show.
+#[derive(Clone, PartialEq)]
+struct PeerRow {
+    id: String,
+    label: String,
 }
 
 enum UserEvent {
@@ -86,7 +94,10 @@ fn snapshot(current: &Shared) -> Snapshot {
             } else {
                 p.models.join(", ")
             };
-            format!("{}  ({st})  {models}", p.url)
+            PeerRow {
+                id: p.id.clone(),
+                label: format!("{}  ({st})  {models}", p.url),
+            }
         })
         .collect();
     Snapshot {
@@ -208,6 +219,8 @@ pub fn run() {
     let quit_id: MenuId = quit.id().clone();
     let mut tray: Option<TrayIcon> = None;
     let mut settings_window: Option<SettingsWindow> = None;
+    // The "Forget this delegate" item of each listed peer -> that peer's id.
+    let mut forget_ids: HashMap<MenuId, String> = HashMap::new();
     let open_at_start = std::env::args().any(|a| a == "--open-settings");
     let initial = if running.is_some() {
         Health::Active
@@ -247,17 +260,37 @@ pub fn run() {
                 headline.set_text(&s.headline);
                 pool.set_text(&s.pool);
                 for item in peers.items() {
-                    let _ = peers.remove(item.as_menuitem().expect("only text items"));
+                    // Delegates are submenus; "No other delegates" is a plain item.
+                    if let Some(sub) = item.as_submenu() {
+                        let _ = peers.remove(sub);
+                    } else if let Some(plain) = item.as_menuitem() {
+                        let _ = peers.remove(plain);
+                    }
                 }
+                forget_ids.clear();
                 if s.peers.is_empty() {
                     let _ = peers.append(&MenuItem::new("No other delegates", false, None));
                 }
                 for p in &s.peers {
-                    let _ = peers.append(&MenuItem::new(p, false, None));
+                    // Each delegate is a submenu so Forget is not one stray click away.
+                    let sub = Submenu::new(&p.label, true);
+                    let forget = MenuItem::new("Forget this delegate", true, None);
+                    forget_ids.insert(forget.id().clone(), p.id.clone());
+                    let _ = sub.append(&forget);
+                    let _ = peers.append(&sub);
                 }
                 if let Some(t) = &tray {
                     let _ = t.set_icon(Some(icon_for(s.health)));
                     let _ = t.set_tooltip(Some(&s.headline));
+                }
+            }
+            Event::UserEvent(UserEvent::Menu(e)) if forget_ids.contains_key(&e.id) => {
+                let id = forget_ids[&e.id].clone();
+                let state = current.lock().unwrap().state.clone();
+                if let Some(state) = state {
+                    if state.delegates.forget(&id) {
+                        tracing::info!(%id, "delegate forgotten from the menu");
+                    }
                 }
             }
             Event::UserEvent(UserEvent::Menu(e)) if e.id == settings_id => match &settings_window {

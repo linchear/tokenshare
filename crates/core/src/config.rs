@@ -45,6 +45,11 @@ pub struct Config {
     pub sync_interval_secs: u64,
     /// On shutdown, how long to let in-flight requests finish before cutting them off.
     pub shutdown_grace_secs: u64,
+    /// Forget delegates not heard from for this long (their own `last_seen`).
+    /// Live delegates refresh it every keepalive, so only dead ones age out; this
+    /// delegate refuses stale entries from others too, so they do not come back.
+    /// 0 keeps everything forever.
+    pub peer_expiry_secs: u64,
 }
 
 impl Default for Config {
@@ -64,6 +69,7 @@ impl Default for Config {
             keepalive_ttl: 3,
             sync_interval_secs: 60,
             shutdown_grace_secs: 30,
+            peer_expiry_secs: 86_400,
         }
     }
 }

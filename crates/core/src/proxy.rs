@@ -74,7 +74,8 @@ impl AppState {
             id.clone(),
             config.advertise_url.clone(),
             data_dir.map(|d| d.join("table.json")),
-        );
+        )
+        .with_expiry_secs(config.peer_expiry_secs);
         Arc::new(Self {
             id,
             table: LocalTable::new(&config.ollama_hosts),

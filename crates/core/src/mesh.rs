@@ -372,7 +372,13 @@ async fn relay_keepalive(s: Arc<AppState>, msg: Keepalive) {
 pub async fn sync_once(s: &AppState) -> bool {
     for peer in contact_order(s, &[]) {
         match pull_table(s, &peer.url).await {
-            Ok(()) => return true,
+            Ok(()) => {
+                // Fresh data is merged in, so entries still stale now are dead.
+                for gone in s.delegates.prune() {
+                    info!(id = %gone.id, url = %gone.url, "dropped a delegate not heard from in a long time");
+                }
+                return true;
+            }
             Err(e) => {
                 warn!(peer = %peer.url, error = %e, "table sync failed, marking unavailable");
                 s.delegates.set_status(&peer.id, Status::Unavailable);

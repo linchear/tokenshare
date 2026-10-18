@@ -942,3 +942,77 @@ async fn ps_is_empty_without_a_local_ollama_and_passed_through_with_one() {
         .unwrap();
     assert_eq!(local["models"][0]["name"], "running-here");
 }
+
+// ---- stale and forgotten delegates ----
+
+#[tokio::test]
+async fn a_restarted_delegate_relearns_its_own_address_instead_of_trusting_the_saved_one() {
+    let a = node(NodeOpts {
+        models: &["gemma2:latest"],
+        ..Default::default()
+    })
+    .await;
+    let dir = std::env::temp_dir().join(format!("ts-selfurl-{}", common::uuid_like()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // A saved table whose entry for ourselves has a wrong address.
+    let mut stale = tokenshare_core::table::DelegateEntry::new(
+        "me-restarting".into(),
+        "http://10.0.0.5:11399".into(),
+        vec![],
+    );
+    stale.last_seen = 1;
+    std::fs::write(
+        dir.join("table.json"),
+        serde_json::to_vec(&vec![stale]).unwrap(),
+    )
+    .unwrap();
+
+    let config = tokenshare_core::Config {
+        fc: Some(a.url.clone()),
+        ollama_hosts: vec![],
+        ..Default::default()
+    };
+    let s = tokenshare_core::AppState::new("me-restarting".into(), config, Some(dir.clone()));
+    assert_eq!(
+        s.delegates.self_entry().url,
+        "",
+        "the saved address is not trusted"
+    );
+    assert_eq!(rejoin(&s).await, Some(true));
+    // Learned from how the first contact reached us, not the stale value.
+    let url = s.delegates.self_entry().url;
+    assert!(!url.is_empty() && !url.contains("10.0.0.5"), "got {url}");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[tokio::test]
+async fn a_forgotten_dead_delegate_is_not_resurrected_by_gossip_but_returns_when_it_is_back() {
+    let (a, b, mut c) = three_nodes().await;
+    converged(&[&a, &b, &c]).await;
+    c.kill().await;
+    for _ in 0..30 {
+        send_keepalive(&b.state).await;
+        if status_of(&b, &c) == Status::Unavailable {
+            break;
+        }
+    }
+
+    assert!(b.state.delegates.forget(&c.state.id));
+    assert!(b.state.delegates.peers().iter().all(|p| p.id != c.state.id));
+    // A still lists C with the same last_seen; syncing from A must not bring it back.
+    for _ in 0..5 {
+        assert!(sync_once(&b.state).await);
+    }
+    assert!(b.state.delegates.peers().iter().all(|p| p.id != c.state.id));
+
+    // C coming back and saying so (a newer last_seen) is a genuine sign of life.
+    c.restart().await;
+    for _ in 0..10 {
+        send_keepalive(&c.state).await;
+        if b.state.delegates.peers().iter().any(|p| p.id == c.state.id) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(b.state.delegates.peers().iter().any(|p| p.id == c.state.id));
+}
