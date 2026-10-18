@@ -1,6 +1,6 @@
 //! Tray icons: a glossy round badge with a white symbol that says what is going
 //! on without relying on color alone: a check (active), a lightning bolt (in
-//! use), an exclamation mark (no models), pause bars (unavailable). Drawn in code
+//! use), an exclamation mark (no models), an unplugged plug (unavailable). Drawn in code
 //! so there are no assets to ship.
 
 use tokenshare_core::status::Health;
@@ -18,7 +18,7 @@ pub fn emoji(health: Health) -> &'static str {
         Health::Active => "✅",
         Health::InUse => "⚡",
         Health::NoModels => "⚠️",
-        Health::Down => "⏸️",
+        Health::Down => "🔌",
     }
 }
 
@@ -67,9 +67,42 @@ fn polygon_sdf(p: P, pts: &[P]) -> f32 {
 }
 
 const CHECK: [P; 3] = [(0.27, 0.52), (0.43, 0.68), (0.74, 0.33)];
-/// Pause: two rounded bars.
-const PAUSE_L: [P; 2] = [(0.375, 0.34), (0.375, 0.66)];
-const PAUSE_R: [P; 2] = [(0.625, 0.34), (0.625, 0.66)];
+/// Unplugged: a plug (cable, body, two prongs) and a socket (body with two
+/// slots, cable) pointing at each other with a clear gap between them.
+const PLUG_CABLE: [P; 2] = [(0.15, 0.5), (0.27, 0.5)];
+const PLUG_BODY: (P, P) = ((0.31, 0.5), (0.075, 0.18));
+const PRONG_TOP: [P; 2] = [(0.385, 0.42), (0.51, 0.42)];
+const PRONG_BOTTOM: [P; 2] = [(0.385, 0.58), (0.51, 0.58)];
+const SOCKET_BODY: (P, P) = ((0.69, 0.5), (0.085, 0.18));
+const SLOT_TOP: [P; 2] = [(0.605, 0.42), (0.655, 0.42)];
+const SLOT_BOTTOM: [P; 2] = [(0.605, 0.58), (0.655, 0.58)];
+const SOCKET_CABLE: [P; 2] = [(0.775, 0.5), (0.85, 0.5)];
+
+/// Signed distance to a rounded box (`half` extents, corner radius `r`).
+fn rbox(p: P, (c, half): (P, P), r: f32) -> f32 {
+    let (qx, qy) = (
+        (p.0 - c.0).abs() - half.0 + r,
+        (p.1 - c.1).abs() - half.1 + r,
+    );
+    (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - r
+}
+
+fn capsule(p: P, [a, b]: [P; 2], r: f32) -> f32 {
+    seg_dist(p, a, b) - r
+}
+
+fn unplugged_sdf(p: P) -> f32 {
+    let plug = capsule(p, PLUG_CABLE, 0.04)
+        .min(rbox(p, PLUG_BODY, 0.04))
+        .min(capsule(p, PRONG_TOP, 0.042))
+        .min(capsule(p, PRONG_BOTTOM, 0.042));
+    let slots = capsule(p, SLOT_TOP, 0.025).min(capsule(p, SLOT_BOTTOM, 0.025));
+    let socket = rbox(p, SOCKET_BODY, 0.04)
+        .max(-slots)
+        .min(capsule(p, SOCKET_CABLE, 0.04));
+    plug.min(socket)
+}
+
 /// Exclamation mark: a bar and a dot.
 const BAR: [P; 2] = [(0.5, 0.25), (0.5, 0.53)];
 const DOT: P = (0.5, 0.74);
@@ -86,9 +119,7 @@ const BOLT: [P; 6] = [
 fn glyph_sdf(health: Health, p: P) -> f32 {
     match health {
         Health::Active => polyline_dist(p, &CHECK) - 0.065,
-        Health::Down => {
-            seg_dist(p, PAUSE_L[0], PAUSE_L[1]).min(seg_dist(p, PAUSE_R[0], PAUSE_R[1])) - 0.062
-        }
+        Health::Down => unplugged_sdf(p),
         Health::InUse => polygon_sdf(p, &BOLT) - 0.012,
         Health::NoModels => {
             let dot = ((p.0 - DOT.0).powi(2) + (p.1 - DOT.1).powi(2)).sqrt() - 0.068;
@@ -233,14 +264,23 @@ mod tests {
         assert!(!dark(px(&warn, 64, 0.50, 0.63)), "gap between bar and dot");
         assert!(!is_white(px(&warn, 64, 0.50, 0.40)));
 
-        let pause = render(Health::Down, 64);
-        assert!(is_white(px(&pause, 64, 0.375, 0.50)), "left bar");
-        assert!(is_white(px(&pause, 64, 0.625, 0.50)), "right bar");
+        let plug = render(Health::Down, 64);
+        assert!(is_white(px(&plug, 64, 0.31, 0.50)), "plug body");
+        assert!(is_white(px(&plug, 64, 0.20, 0.50)), "plug cable");
+        assert!(is_white(px(&plug, 64, 0.45, 0.43)), "upper prong");
+        assert!(is_white(px(&plug, 64, 0.45, 0.57)), "lower prong");
+        assert!(is_white(px(&plug, 64, 0.72, 0.50)), "socket body");
+        assert!(is_white(px(&plug, 64, 0.82, 0.50)), "socket cable");
+        // Disconnected: a gap between the prongs and the socket, and slots in the socket.
         assert!(
-            !is_white(px(&pause, 64, 0.50, 0.50)),
-            "gap between the bars"
+            !is_white(px(&plug, 64, 0.56, 0.43)),
+            "gap at the prong tips"
         );
-        assert!(!is_white(px(&pause, 64, 0.375, 0.20)), "bars are short");
+        assert!(
+            !is_white(px(&plug, 64, 0.56, 0.50)),
+            "gap between the prongs"
+        );
+        assert!(!is_white(px(&plug, 64, 0.62, 0.43)), "socket slot");
     }
 
     #[test]
@@ -259,7 +299,7 @@ mod tests {
 
     #[test]
     fn emoji_differ_per_state() {
-        assert_eq!(ALL.map(emoji), ["✅", "⚡", "⚠️", "⏸️"]);
+        assert_eq!(ALL.map(emoji), ["✅", "⚡", "⚠️", "🔌"]);
     }
 
     /// `ICON_PREVIEW=/path/sheet.png cargo test -p tokenshare-tray preview` writes
