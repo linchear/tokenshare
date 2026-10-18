@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::Parser;
 use tokenshare_core::config::{default_config_path, default_data_dir, load_or_create_id};
-use tokenshare_core::mesh::join_loop;
+use tokenshare_core::mesh::{join_loop, keepalive_loop, sync_loop};
 use tokenshare_core::{poll_local_table, serve, AppState, Config};
 use tracing::info;
 
@@ -71,6 +71,8 @@ async fn main() -> Result<()> {
     state.refresh_local().await;
     tokio::spawn(poll_local_table(state.clone()));
     tokio::spawn(join_loop(state.clone()));
+    tokio::spawn(keepalive_loop(state.clone()));
+    tokio::spawn(sync_loop(state.clone()));
 
     serve(listener, state, shutdown_signal()).await?;
     Ok(())

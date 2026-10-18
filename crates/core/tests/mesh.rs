@@ -358,3 +358,217 @@ async fn rejoin_with_nobody_reachable_reports_failure_and_nobody_known_reports_n
         tokenshare_core::AppState::new("alone".into(), tokenshare_core::Config::default(), None);
     assert_eq!(rejoin(&s).await, None);
 }
+
+// ---- M3: keepalive gossip and table sync ----
+
+use tokenshare_core::mesh::{send_keepalive, sync_once};
+
+fn status_of(n: &Node, of: &Node) -> Status {
+    n.state
+        .delegates
+        .peers()
+        .into_iter()
+        .find(|p| p.id == of.state.id)
+        .unwrap()
+        .status
+}
+
+fn models_of(n: &Node, of: &Node) -> Vec<String> {
+    n.state
+        .delegates
+        .peers()
+        .into_iter()
+        .find(|p| p.id == of.state.id)
+        .unwrap()
+        .models
+}
+
+#[tokio::test]
+async fn keepalive_updates_the_entry_and_is_relayed_to_everyone() {
+    let (a, b, c) = three_nodes().await;
+    converged(&[&a, &b, &c]).await;
+
+    b.state
+        .delegates
+        .update_self(vec!["brand-new:latest".into()]);
+    assert!(send_keepalive(&b.state).await);
+    // B -> A or C; whoever got it relays to the other (never back to B).
+    eventually(3, "A and C to learn B's models", || {
+        models_of(&a, &b) == vec!["brand-new:latest".to_string()]
+            && models_of(&c, &b) == vec!["brand-new:latest".to_string()]
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn duplicate_keepalives_are_dropped() {
+    let (a, b, c) = three_nodes().await;
+    converged(&[&a, &b, &c]).await;
+    let msg = json!({
+        "msg_id": "m-1", "via": b.state.id, "ttl": 3, "entry": b.state.delegates.self_entry(),
+    });
+    let post = || async {
+        reqwest::Client::new()
+            .post(format!("{}/_ts/keepalive", a.url))
+            .json(&msg)
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()
+    };
+    assert_eq!(post().await["duplicate"], Value::Null);
+    assert_eq!(post().await["duplicate"], true);
+}
+
+#[tokio::test]
+async fn unresponsive_peer_is_marked_unavailable_and_another_is_tried() {
+    let (a, b, mut c) = three_nodes().await;
+    converged(&[&a, &b, &c]).await;
+    c.kill().await;
+
+    // Each call picks a random peer; if it picks C it must fall back to A.
+    for _ in 0..30 {
+        assert!(
+            send_keepalive(&b.state).await,
+            "keepalive must still reach A"
+        );
+        if status_of(&b, &c) == Status::Unavailable {
+            break;
+        }
+    }
+    assert_eq!(status_of(&b, &c), Status::Unavailable);
+    assert_eq!(status_of(&b, &a), Status::Online);
+}
+
+#[tokio::test]
+async fn unavailable_peer_is_skipped_by_routing() {
+    let a = node(NodeOpts {
+        models: &["gemma2:latest"],
+        ..Default::default()
+    })
+    .await;
+    let mut d = node(NodeOpts {
+        models: &["gemma2:latest"],
+        fc: Some(&a.url),
+        ..Default::default()
+    })
+    .await;
+    let c = node(NodeOpts {
+        fc: Some(&a.url),
+        ..Default::default()
+    })
+    .await;
+    for n in [&d, &c] {
+        assert_eq!(rejoin(&n.state).await, Some(true));
+    }
+    converged(&[&a, &d, &c]).await;
+    d.kill().await;
+    // Whichever of A or D C tries first, the request succeeds; D is marked
+    // unavailable the first time it refuses a connection.
+    for _ in 0..10 {
+        assert_eq!(post_chat(&c.url, "gemma2").await.status(), 200);
+    }
+    for _ in 0..30 {
+        if status_of(&c, &d) == Status::Unavailable {
+            break;
+        }
+        assert_eq!(post_chat(&c.url, "gemma2").await.status(), 200);
+    }
+    assert_eq!(status_of(&c, &d), Status::Unavailable);
+}
+
+#[tokio::test]
+async fn peer_comes_back_only_through_its_own_keepalive_not_through_sync() {
+    let (a, b, mut c) = three_nodes().await;
+    converged(&[&a, &b, &c]).await;
+    c.kill().await;
+    for _ in 0..30 {
+        send_keepalive(&a.state).await;
+        if status_of(&a, &c) == Status::Unavailable {
+            break;
+        }
+    }
+    assert_eq!(status_of(&a, &c), Status::Unavailable);
+
+    c.restart().await;
+    // Pulling tables (B still shows C online) must not resurrect it.
+    for _ in 0..5 {
+        assert!(sync_once(&a.state).await);
+    }
+    assert_eq!(status_of(&a, &c), Status::Unavailable);
+
+    // C's own keepalive does. C picks A or B; B relays on to A.
+    send_keepalive(&c.state).await;
+    eventually(3, "A to see C online again", || {
+        status_of(&a, &c) == Status::Online
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn sync_repairs_a_missed_announce() {
+    let (a, mut b, c) = three_nodes().await;
+    converged(&[&a, &b, &c]).await;
+
+    // D joins via A while B is down, so B never hears the announcement.
+    b.kill().await;
+    let d = node(NodeOpts {
+        models: &["qwen:latest"],
+        fc: Some(&a.url),
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(rejoin(&d.state).await, Some(true));
+    eventually(3, "A and C to learn D", || {
+        a.state.delegates.count() == 4 && c.state.delegates.count() == 4
+    })
+    .await;
+    assert_eq!(b.state.delegates.count(), 3);
+
+    b.restart().await;
+    assert!(sync_once(&b.state).await);
+    assert_eq!(b.state.delegates.count(), 4);
+    assert_eq!(b.state.delegates.hash(), a.state.delegates.hash());
+}
+
+#[tokio::test]
+async fn sync_with_everyone_down_reports_failure() {
+    let (a, mut b, mut c) = three_nodes().await;
+    converged(&[&a, &b, &c]).await;
+    b.kill().await;
+    c.kill().await;
+    assert!(!sync_once(&a.state).await);
+    assert_eq!(status_of(&a, &b), Status::Unavailable);
+    assert_eq!(status_of(&a, &c), Status::Unavailable);
+    // With nobody online, an isolated delegate still reaches out to try again.
+    c.restart().await;
+    assert!(sync_once(&a.state).await);
+}
+
+#[tokio::test]
+async fn keepalive_loop_runs_on_its_interval() {
+    let a = node(NodeOpts {
+        models: &["gemma2:latest"],
+        ..Default::default()
+    })
+    .await;
+    let c = node(NodeOpts {
+        fc: Some(&a.url),
+        keepalive_interval_secs: Some(1),
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(rejoin(&c.state).await, Some(true));
+    converged(&[&a, &c]).await;
+    let before = a.state.delegates.peers()[0].last_seen;
+
+    // C's interval is 1s; the loop skips its immediate first tick.
+    let handle = tokio::spawn(tokenshare_core::mesh::keepalive_loop(c.state.clone()));
+    eventually(4, "A to receive a keepalive from C's loop", || {
+        a.state.delegates.peers()[0].last_seen > before
+    })
+    .await;
+    handle.abort();
+}

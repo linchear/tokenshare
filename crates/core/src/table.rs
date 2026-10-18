@@ -136,6 +136,17 @@ impl DelegateTable {
         self.persist();
     }
 
+    /// Bump our own `last_seen` (we are alive) without touching anything else.
+    pub fn touch_self(&self) {
+        {
+            let mut g = self.inner.write().unwrap();
+            let me = g.get_mut(&self.self_id).unwrap();
+            me.status = Status::Online;
+            me.last_seen = now_ms();
+        }
+        self.persist();
+    }
+
     /// Entries peers can act on: those with a known URL. Includes ourselves.
     pub fn shared_entries(&self) -> Vec<DelegateEntry> {
         let mut v: Vec<_> = self

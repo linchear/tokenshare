@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-use std::future::pending;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -110,6 +109,54 @@ pub struct Node {
     pub url: String,
     pub state: Arc<AppState>,
     pub mock: Mock,
+    addr: std::net::SocketAddr,
+    server: Option<(
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<()>,
+    )>,
+}
+
+fn start_server(
+    l: TcpListener,
+    state: Arc<AppState>,
+) -> (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let handle = tokio::spawn(async move {
+        let _ = serve(l, state, async move {
+            // Only an explicit `kill` stops the server; dropping the Node doesn't.
+            if rx.await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        })
+        .await;
+    });
+    (tx, handle)
+}
+
+impl Node {
+    /// Stop serving: the port refuses connections afterwards.
+    pub async fn kill(&mut self) {
+        if let Some((tx, handle)) = self.server.take() {
+            let _ = tx.send(());
+            let _ = tokio::time::timeout(Duration::from_secs(3), handle).await;
+        }
+    }
+
+    /// Serve again on the same address with the same state.
+    pub async fn restart(&mut self) {
+        assert!(self.server.is_none(), "node is running");
+        for _ in 0..50 {
+            if let Ok(l) = TcpListener::bind(self.addr).await {
+                self.server = Some(start_server(l, self.state.clone()));
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("could not rebind {}", self.addr);
+    }
 }
 
 pub struct NodeOpts<'a> {
@@ -119,6 +166,7 @@ pub struct NodeOpts<'a> {
     pub chunk_delay_ms: u64,
     pub data_dir: Option<std::path::PathBuf>,
     pub id: Option<String>,
+    pub keepalive_interval_secs: Option<u64>,
 }
 
 impl Default for NodeOpts<'_> {
@@ -130,6 +178,7 @@ impl Default for NodeOpts<'_> {
             chunk_delay_ms: 0,
             data_dir: None,
             id: None,
+            keepalive_interval_secs: None,
         }
     }
 }
@@ -145,13 +194,16 @@ pub async fn node(opts: NodeOpts<'_>) -> Node {
         fc: opts.fc.map(str::to_string),
         ollama_hosts: vec![mock.url.clone()],
         pool_size: opts.pool,
+        keepalive_interval_secs: opts.keepalive_interval_secs.unwrap_or(30),
         ..Config::default()
     };
     let state = AppState::new(opts.id.unwrap_or_else(uuid_like), config, opts.data_dir);
     state.refresh_local().await;
-    tokio::spawn(serve(l, state.clone(), pending()));
+    let server = Some(start_server(l, state.clone()));
     Node {
         url: format!("http://{addr}"),
+        addr,
+        server,
         state,
         mock,
     }

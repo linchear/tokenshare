@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
@@ -50,6 +51,8 @@ pub struct AppState {
     pub delegates: DelegateTable,
     pub pool: Pool,
     pub client: reqwest::Client,
+    /// Keepalive message IDs already handled, so relays cannot loop.
+    seen_keepalives: Mutex<HashMap<String, Instant>>,
 }
 
 impl AppState {
@@ -71,7 +74,16 @@ impl AppState {
             pool: Pool::new(config.pool_size),
             config,
             client,
+            seen_keepalives: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// True the first time `msg_id` is seen. Old IDs are forgotten after 10 minutes.
+    pub fn first_sight(&self, msg_id: &str) -> bool {
+        let mut seen = self.seen_keepalives.lock().unwrap();
+        let now = Instant::now();
+        seen.retain(|_, t| now.duration_since(*t) < Duration::from_secs(600));
+        seen.insert(msg_id.to_string(), now).is_none()
     }
 
     /// Re-query local ollama hosts and publish the result in our own entry.
@@ -93,6 +105,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/_ts/status", get(status))
         .route("/_ts/join", post(mesh::join))
         .route("/_ts/announce", post(mesh::announce))
+        .route("/_ts/keepalive", post(mesh::keepalive))
         .route("/_ts/table", get(mesh::table))
         .fallback(proxy)
         .with_state(state)
@@ -330,7 +343,13 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
                 Ok(resp) => {
                     info!(peer = %peer.url, status = resp.status().as_u16(), "peer declined, trying next")
                 }
-                Err(e) => warn!(peer = %peer.url, error = %e, "peer unreachable, trying next"),
+                Err(e) => {
+                    warn!(peer = %peer.url, error = %e, "peer unreachable, trying next");
+                    if e.is_connect() {
+                        s.delegates
+                            .set_status(&peer.id, crate::table::Status::Unavailable);
+                    }
+                }
             }
         }
     }

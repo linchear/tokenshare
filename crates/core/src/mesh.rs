@@ -145,6 +145,7 @@ async fn announce_new_member(s: Arc<AppState>, entry: DelegateEntry) {
                 .and_then(|r| r.error_for_status());
             if let Err(e) = r {
                 warn!(peer = %p.url, error = %e, "announce failed");
+                s.delegates.set_status(&p.id, Status::Unavailable);
             }
         }
     });
@@ -240,5 +241,151 @@ pub async fn join_loop(s: Arc<AppState>) {
                 tokio::time::sleep(Duration::from_secs(wait)).await;
             }
         }
+    }
+}
+
+// ---- keepalive gossip and table sync ----
+
+/// "I'm alive" from `entry`, relayed along a random walk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Keepalive {
+    pub msg_id: String,
+    /// The delegate that sent us this copy (not necessarily the origin).
+    pub via: String,
+    /// Further hops allowed after this one.
+    pub ttl: u8,
+    /// The origin's own entry: models, load, `last_seen`.
+    pub entry: DelegateEntry,
+}
+
+/// Order in which to try peers: online ones in random order. Only when none
+/// are online do we fall back to unavailable ones, so an isolated delegate
+/// can still reach out.
+fn contact_order(s: &AppState, exclude: &[&str]) -> Vec<DelegateEntry> {
+    let peers: Vec<_> = s
+        .delegates
+        .peers()
+        .into_iter()
+        .filter(|p| !exclude.contains(&p.id.as_str()))
+        .collect();
+    let mut online: Vec<_> = peers
+        .iter()
+        .filter(|p| p.status == Status::Online)
+        .cloned()
+        .collect();
+    if online.is_empty() {
+        online = peers
+            .into_iter()
+            .filter(|p| p.status == Status::Unavailable)
+            .collect();
+    }
+    online.shuffle(&mut rand::rng());
+    online
+}
+
+async fn post_keepalive(s: &AppState, peer: &DelegateEntry, msg: &Keepalive) -> bool {
+    let r = s
+        .client
+        .post(format!("{}/_ts/keepalive", peer.url))
+        .timeout(COORD_TIMEOUT)
+        .json(msg)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status());
+    match r {
+        Ok(_) => true,
+        Err(e) => {
+            warn!(peer = %peer.url, error = %e, "keepalive failed, marking unavailable");
+            s.delegates.set_status(&peer.id, Status::Unavailable);
+            false
+        }
+    }
+}
+
+/// Send our keepalive to one random peer; if it does not answer, mark it
+/// unavailable and try another. Returns whether any peer received it.
+pub async fn send_keepalive(s: &AppState) -> bool {
+    s.delegates.touch_self();
+    let msg = Keepalive {
+        msg_id: uuid::Uuid::new_v4().to_string(),
+        via: s.id.clone(),
+        ttl: s.config.keepalive_ttl,
+        entry: s.delegates.self_entry(),
+    };
+    s.first_sight(&msg.msg_id);
+    for peer in contact_order(s, &[]) {
+        if post_keepalive(s, &peer, &msg).await {
+            return true;
+        }
+    }
+    false
+}
+
+/// A keepalive arrived. Record the origin as alive and pass it on.
+pub async fn keepalive(State(s): State<Arc<AppState>>, Json(msg): Json<Keepalive>) -> Json<Value> {
+    if !s.first_sight(&msg.msg_id) {
+        return Json(json!({ "ok": true, "duplicate": true }));
+    }
+    if msg.entry.id != s.id {
+        // A keepalive carries a newer `last_seen` than whatever we had, which
+        // is what brings an unavailable delegate back online.
+        s.delegates.merge([msg.entry.clone()]);
+    }
+    if msg.ttl > 0 {
+        tokio::spawn(relay_keepalive(s, msg));
+    }
+    Json(json!({ "ok": true }))
+}
+
+/// Forward to one random peer, other than whoever sent it to us and the origin.
+async fn relay_keepalive(s: Arc<AppState>, msg: Keepalive) {
+    let next = Keepalive {
+        via: s.id.clone(),
+        ttl: msg.ttl - 1,
+        ..msg.clone()
+    };
+    if let Some(peer) = contact_order(&s, &[&msg.via, &msg.entry.id])
+        .into_iter()
+        .next()
+    {
+        post_keepalive(&s, &peer, &next).await;
+    }
+}
+
+/// Pull the full table from one random peer and merge it into ours.
+/// Unreachable peers are marked unavailable and the next one is tried.
+pub async fn sync_once(s: &AppState) -> bool {
+    for peer in contact_order(s, &[]) {
+        match pull_table(s, &peer.url).await {
+            Ok(()) => return true,
+            Err(e) => {
+                warn!(peer = %peer.url, error = %e, "table sync failed, marking unavailable");
+                s.delegates.set_status(&peer.id, Status::Unavailable);
+            }
+        }
+    }
+    false
+}
+
+/// An interval whose first (immediate) tick is skipped; joining handles startup.
+async fn ticker(secs: u64) -> tokio::time::Interval {
+    let mut tick = tokio::time::interval(Duration::from_secs(secs.max(1)));
+    tick.tick().await;
+    tick
+}
+
+pub async fn keepalive_loop(s: Arc<AppState>) {
+    let mut tick = ticker(s.config.keepalive_interval_secs).await;
+    loop {
+        tick.tick().await;
+        send_keepalive(&s).await;
+    }
+}
+
+pub async fn sync_loop(s: Arc<AppState>) {
+    let mut tick = ticker(s.config.sync_interval_secs).await;
+    loop {
+        tick.tick().await;
+        sync_once(&s).await;
     }
 }

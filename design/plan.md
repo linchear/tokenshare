@@ -74,8 +74,17 @@ macOS, Windows, and Linux are all first-class targets. The tray UI is macOS and 
   - A client disconnect during a forwarded stream drops the connection to the peer.
   - Add the mid-stream upstream failure test for the local path too. M1 covers client disconnect but not upstream failure mid-stream.
 
-### M3: Self-healing
+### M3: Self-healing (done)
 **Phase 4, Keepalive and sync**
+
+As built:
+- Config: `keepalive_interval_secs` (30), `keepalive_ttl` (3 relay hops), `sync_interval_secs` (60).
+- A keepalive carries the origin's own entry and a message ID. Receivers drop duplicate IDs, merge the entry, and relay it to one random peer other than the one that sent it and the origin.
+- Besides keepalive and sync failures, a failed announce or a refused connection while forwarding a request also marks the peer unavailable.
+- Peers are tried online-first. If none are online, unavailable peers are tried, so an isolated delegate can still reach out.
+- Status is a local judgement and never travels with a sync: an unavailable peer returns only via a keepalive with a newer `last_seen`.
+
+Original scope:
 - Periodic keepalive (models, last_seen) to one random peer.
 - On timeout, mark the peer unavailable and try another.
 - On receipt, update the sender's entry, then forward to a random peer other than the sender. Dedupe by message ID, with a TTL.

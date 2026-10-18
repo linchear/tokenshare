@@ -25,6 +25,12 @@ pub struct Config {
     pub poll_interval_secs: u64,
     /// Wait before trying to rejoin when no known delegate answered.
     pub rejoin_retry_secs: u64,
+    /// How often to send a keepalive to one random peer.
+    pub keepalive_interval_secs: u64,
+    /// How many more hops a keepalive is relayed after the first delegate.
+    pub keepalive_ttl: u8,
+    /// How often to pull and merge the full table from one random peer.
+    pub sync_interval_secs: u64,
 }
 
 impl Default for Config {
@@ -37,6 +43,9 @@ impl Default for Config {
             pool_size: 3,
             poll_interval_secs: 10,
             rejoin_retry_secs: 300,
+            keepalive_interval_secs: 30,
+            keepalive_ttl: 3,
+            sync_interval_secs: 60,
         }
     }
 }
