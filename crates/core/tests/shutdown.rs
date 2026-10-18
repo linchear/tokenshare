@@ -151,3 +151,53 @@ async fn an_ollama_host_that_is_the_delegate_itself_is_refused() {
         "{err:#}"
     );
 }
+
+#[tokio::test]
+async fn a_masquerading_delegate_serves_on_both_ports_and_stops_them_both() {
+    use tokenshare_core::config::{Face, Listener};
+    let mock = mock_ollama(&["gemma2:latest"], 0).await;
+    let dir = std::env::temp_dir().join(format!("ts-masq-{}", common::uuid_like()));
+    let config = Config {
+        port: 0,
+        masquerade: true,
+        ollama_hosts: vec![mock.url.clone()],
+        ..Config::default()
+    };
+    let listeners = vec![
+        Listener {
+            port: 0,
+            face: Face::Mesh,
+        },
+        Listener {
+            port: 0,
+            face: Face::Ollama,
+        },
+    ];
+    let running = daemon::start_on(config, dir, listeners).await.unwrap();
+    let ports = running.ports();
+    assert_eq!(ports.len(), 2);
+    assert_ne!(ports[0], ports[1]);
+    let (mesh, ollama) = (
+        format!("http://127.0.0.1:{}", ports[0]),
+        format!("http://127.0.0.1:{}", ports[1]),
+    );
+
+    assert_eq!(
+        chat(&ollama).await.status(),
+        200,
+        "ollama port serves the local ollama"
+    );
+    assert_eq!(
+        chat(&mesh).await.status(),
+        404,
+        "tokenshare port has no models of its own"
+    );
+
+    running.stop(Duration::from_secs(5)).await.unwrap();
+    for url in [&mesh, &ollama] {
+        assert!(
+            reqwest::get(format!("{url}/_ts/status")).await.is_err(),
+            "{url} should be closed"
+        );
+    }
+}

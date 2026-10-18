@@ -47,8 +47,8 @@
     <div><label for="port">Listen port</label><input id="port" inputmode="numeric"></div>
   </div>
 
-  <label class="check"><input type="checkbox" id="masq"> Masquerade as ollama (listen on port 11434)</label>
-  <div class="hint">Lets apps that already talk to ollama's default port use the pool without any change.</div>
+  <label class="check"><input type="checkbox" id="masq"> Also listen on ollama's port (11434), as a masquerade</label>
+  <div class="hint">Lets apps that already talk to ollama's default port use the pool without any change. The listen port above stays open for other delegates, as a delegate with no models: while masquerading, this machine's ollama is not shared with them.</div>
   <div id="masq-warn" class="callout"><b>This is ollama's own port.</b> Do not run a local ollama on 11434 at the same time: start it on another port (for example <code>OLLAMA_HOST=127.0.0.1:11435</code>) and list that address under Ollama hosts above.</div>
 
   <details>
@@ -71,7 +71,6 @@
   $('fc').value = init.fc; $('hosts').value = init.ollama_hosts; $('pool').value = init.pool_size;
   $('port').value = init.port; $('share').checked = init.share_with_peers; $('adv').value = init.advertise_url;
   $('masq').checked = init.masquerade;
-  let normalPort = init.port;   // the port used when not masquerading
   let force = false;            // set after a warning, so the next Save goes through
   if (init.advertise_url) $('adv').closest('details').open = true;
   // Ask the host to fit the window to the content so it never needs a scrollbar.
@@ -95,13 +94,10 @@
     force = false; $('errors').style.display = 'none'; $('save').textContent = 'Save & Restart'; fit();
   }
   function syncMasq() {
-    const on = $('masq').checked;
-    $('port').disabled = on;
-    $('port').value = on ? '11434' : normalPort;
-    $('masq-warn').style.display = on ? 'block' : 'none';
+    $('masq-warn').style.display = $('masq').checked ? 'block' : 'none';
+    syncShare();
     fit();
   }
-  $('port').addEventListener('input', () => { normalPort = $('port').value; });
   $('masq').addEventListener('change', () => { syncMasq(); resetForce(); });
   for (const id of ['port', 'hosts']) $(id).addEventListener('input', resetForce);
   $('cancel').onclick = () => send({ cmd: 'cancel' });
@@ -109,7 +105,7 @@
     e.preventDefault();
     $('save').disabled = true; $('save').textContent = 'Restarting…';
     send({ cmd: 'save', force, form: { fc: $('fc').value, advertise_url: $('adv').value,
-      ollama_hosts: $('hosts').value, port: normalPort, pool_size: $('pool').value,
+      ollama_hosts: $('hosts').value, port: $('port').value, pool_size: $('pool').value,
       share_with_peers: $('share').checked, masquerade: $('masq').checked } });
   };
   // WKWebView in an app without a working Edit menu ignores Cmd+A/C/X/V, so on
@@ -137,11 +133,12 @@
   });
   document.querySelector('details').addEventListener('toggle', fit);
   window.addEventListener('load', fit);
-  // Nothing to share without a local ollama.
   function syncShare() {
-    const none = $('hosts').value.trim() === '';
-    $('share').disabled = none;
-    $('share').closest('label').style.opacity = none ? '.5' : '1';
+    // Nothing to share without a local ollama, and a masquerading machine
+    // presents no models to other delegates.
+    const off = $('hosts').value.trim() === '' || $('masq').checked;
+    $('share').disabled = off;
+    $('share').closest('label').style.opacity = off ? '.5' : '1';
   }
   $('hosts').addEventListener('input', syncShare);
   syncShare();

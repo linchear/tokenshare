@@ -369,11 +369,14 @@ fn save_and_restart(
     let base = Config::load(path).map_err(|e| invalid(format!("{e:#}")))?;
     let config = apply(form, &base).map_err(SaveError::Invalid)?;
 
-    // Warn if the port we are about to take is busy. Our own current port does
-    // not count: it is freed by the restart.
-    let port = config.listen_port();
-    let ours = running.as_ref().map(|r| r.addr.port());
-    if !force && ours != Some(port) && tokenshare_core::config::port_in_use(port) {
+    // Warn if a port we are about to take is busy. Our own current ports do
+    // not count: they are freed by the restart.
+    let ours = running.as_ref().map(|r| r.ports()).unwrap_or_default();
+    let busy = config
+        .listen_ports()
+        .into_iter()
+        .find(|p| !ours.contains(p) && tokenshare_core::config::port_in_use(*p));
+    if let (false, Some(port)) = (force, busy) {
         let who = if port == tokenshare_core::config::OLLAMA_PORT {
             "probably ollama itself"
         } else {

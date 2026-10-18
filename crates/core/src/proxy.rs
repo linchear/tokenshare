@@ -17,7 +17,7 @@ use rand::seq::SliceRandom;
 use serde_json::{json, Value};
 use tracing::{info, warn};
 
-use crate::config::Config;
+use crate::config::{Config, Face};
 use crate::mesh;
 use crate::ollama::{model_matches, LocalTable};
 use crate::pool::Pool;
@@ -109,7 +109,7 @@ impl AppState {
     pub async fn refresh_local(&self) {
         self.table.refresh(&self.client).await;
         // Not sharing means advertising no models, so peers never pick us.
-        let models = if self.config.share_with_peers {
+        let models = if self.config.shares_models() {
             self.table
                 .all_models()
                 .into_iter()
@@ -123,7 +123,14 @@ impl AppState {
 }
 
 /// Coordination endpoints live under `/_ts/`; everything else is ollama traffic.
+/// The router serves the full ollama API; see [`router_for`] for a mesh-only one.
 pub fn router(state: Arc<AppState>) -> Router {
+    router_for(state, Face::Ollama)
+}
+
+/// A router for a listener with the given [`Face`]. Handlers read the face from
+/// a request extension, so one `AppState` can sit behind several ports.
+pub fn router_for(state: Arc<AppState>, face: Face) -> Router {
     Router::new()
         .route("/_ts/status", get(status))
         .route("/_ts/join", post(mesh::join))
@@ -131,18 +138,29 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/_ts/keepalive", post(mesh::keepalive))
         .route("/_ts/table", get(mesh::table))
         .fallback(proxy)
+        .layer(axum::Extension(face))
         .with_state(state)
 }
 
-/// Serve until `shutdown` resolves.
+/// Serve the full ollama API until `shutdown` resolves.
 pub async fn serve(
     listener: tokio::net::TcpListener,
     state: Arc<AppState>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
+    serve_face(listener, state, Face::Ollama, shutdown).await
+}
+
+/// Serve with the given [`Face`] until `shutdown` resolves.
+pub async fn serve_face(
+    listener: tokio::net::TcpListener,
+    state: Arc<AppState>,
+    face: Face,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> std::io::Result<()> {
     axum::serve(
         listener,
-        router(state).into_make_service_with_connect_info::<SocketAddr>(),
+        router_for(state, face).into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown)
     .await
@@ -285,9 +303,16 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
     let start = Instant::now();
     let (parts, body) = req.into_parts();
     let path = parts.uri.path().to_string();
+    // A mesh-only listener behaves as a delegate with no models of its own.
+    let face = parts
+        .extensions
+        .get::<Face>()
+        .copied()
+        .unwrap_or(Face::Ollama);
+    let has_local = face == Face::Ollama;
 
     if parts.method == Method::GET && path == "/api/tags" {
-        return tags(&s);
+        return tags(&s, has_local);
     }
 
     let bytes = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
@@ -309,7 +334,7 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
 
     if !INFERENCE_PATHS.contains(&path.as_str()) {
         // Everything else (pull, show, version, ...) is local ollama only.
-        let Some(host) = s.table.first_up() else {
+        let Some(host) = s.table.first_up().filter(|_| has_local) else {
             return error(StatusCode::SERVICE_UNAVAILABLE, "no local ollama available");
         };
         return match out.send(format!("{host}{path_and_query}"), None).await {
@@ -336,7 +361,7 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
     };
     let mut visited = visited_ids(&parts.headers);
     let forwarded = !visited.is_empty();
-    if forwarded && !s.config.share_with_peers {
+    if forwarded && !s.config.shares_models() {
         // A peer's view of us can be stale (it may still list our models), so
         // refuse here too. It treats this like any other busy peer and moves on.
         info!(path, model, status = 503, "not sharing with peers");
@@ -353,7 +378,7 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
     };
 
     // 1. Serve locally if we have the model and a free pool slot.
-    let local_host = s.table.host_for_model(&model);
+    let local_host = s.table.host_for_model(&model).filter(|_| has_local);
     if let Some(host) = &local_host {
         if let Some(permit) = s.pool.try_acquire() {
             return match out.send(format!("{host}{path_and_query}"), None).await {
@@ -416,8 +441,12 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
 }
 
 /// Union of models across this machine and all online peers.
-fn tags(s: &AppState) -> Response {
-    let mut models: Vec<Value> = s.table.all_models().into_iter().map(|m| m.raw).collect();
+fn tags(s: &AppState, include_local: bool) -> Response {
+    let mut models: Vec<Value> = if include_local {
+        s.table.all_models().into_iter().map(|m| m.raw).collect()
+    } else {
+        vec![]
+    };
     let mut have: Vec<String> = models
         .iter()
         .filter_map(|m| m["name"].as_str().map(str::to_string))

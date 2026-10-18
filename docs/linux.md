@@ -117,7 +117,7 @@ config key. Command-line flags override the file:
 | `--advertise-url URL` | `advertise_url` | how peers reach this machine |
 | `--ollama-host URL` | `ollama_hosts` | ollama host (repeat for several) |
 | `--pool-size N` | `pool_size` | concurrent ollama connections |
-| `--masquerade` | `masquerade` | listen on 11434, ollama's own port |
+| `--masquerade` | `masquerade` | also listen on 11434, ollama's own port |
 | `--client-only` | `ollama_hosts = []` | no local ollama |
 
 Other options (`share_with_peers`, keepalive and sync intervals, the shutdown
@@ -178,9 +178,18 @@ you get `503` with `Retry-After`; if nobody has the model you get `404`.
 
 ### Let existing ollama clients work unchanged
 
-With `masquerade = true` (or `--masquerade`) the delegate listens on **11434**,
-ollama's own port, so apps already pointed at `localhost:11434` use the pool
-with no changes. That port is normally taken by ollama itself, so move ollama to
+With `masquerade = true` (or `--masquerade`) the delegate listens on **two**
+ports: **11434**, ollama's own port, so apps already pointed at
+`localhost:11434` use the pool with no changes; and the tokenshare port
+(`port`, 11343 by default), which is how other delegates reach it. The
+tokenshare port acts as a delegate with **no models**: this machine still joins
+the pool and shows up in other delegates' tables, and requests arriving on that
+port are forwarded to other delegates, but are never served from your local
+ollama. So a masquerading machine uses the pool without lending its own ollama
+to it. Open 11343 in the firewall for other machines as usual; 11434 only needs
+to be reachable by your own clients.
+
+That port is normally taken by ollama itself, so move ollama to
 another port first. For the packaged ollama service:
 
 ```bash
@@ -203,8 +212,8 @@ masquerade = true
 ollama_hosts = ["http://127.0.0.1:11435"]
 ```
 
-The delegate refuses to start if an ollama host points back at itself, and says
-so if 11434 is already in use.
+The delegate refuses to start if an ollama host points back at itself (on 11434
+or the tokenshare port), and says so if either port is already in use.
 
 ### Client-only (no local ollama)
 

@@ -94,9 +94,9 @@ pub fn apply(form: &Form, base: &Config) -> Result<Config, Vec<String>> {
     c.masquerade = form.masquerade;
     for h in c.self_loop_hosts() {
         errors.push(format!(
-            "Ollama host {h} would be this delegate itself (it listens on port {}). \
+            "Ollama host {h} would be this delegate itself (it listens on {}). \
              Run ollama on another port, e.g. OLLAMA_HOST=127.0.0.1:11435, and use that address here",
-            c.listen_port()
+            ports_text(&c.listen_ports())
         ));
     }
 
@@ -105,6 +105,11 @@ pub fn apply(form: &Form, base: &Config) -> Result<Config, Vec<String>> {
     } else {
         Err(errors)
     }
+}
+
+fn ports_text(ports: &[u16]) -> String {
+    let list: Vec<String> = ports.iter().map(u16::to_string).collect();
+    format!("port {}", list.join(" and "))
 }
 
 #[cfg(test)]
@@ -167,7 +172,7 @@ mod tests {
         };
         let c = apply(&f, &Config::default()).unwrap();
         assert!(c.masquerade);
-        assert_eq!((c.port, c.listen_port()), (12000, 11434));
+        assert_eq!((c.port, c.listen_ports()), (12000, vec![12000, 11434]));
         assert!(Form::from_config(&c).masquerade);
     }
 

@@ -59,6 +59,21 @@ fn table_response(s: &AppState, joined_as: Option<DelegateEntry>) -> TableRespon
     }
 }
 
+/// Our address as the joiner reached us. While masquerading the joiner may have
+/// used ollama's port; peers must use the tokenshare port instead.
+fn self_url_from_host(host: &str, config: &crate::config::Config) -> String {
+    if !config.masquerade {
+        return format!("http://{host}");
+    }
+    let name = match host.strip_prefix('[') {
+        Some(rest) => rest
+            .split_once(']')
+            .map_or(host, |(h, _)| &host[..h.len() + 2]),
+        None => host.rsplit_once(':').map_or(host, |(h, _)| h),
+    };
+    format!("http://{name}:{}", config.port)
+}
+
 fn fmt_ip(ip: IpAddr) -> String {
     match ip {
         IpAddr::V4(v4) => v4.to_string(),
@@ -82,7 +97,7 @@ pub async fn join(
     // The Host header is how the joiner reached us, which is how others can too.
     if let Some(host) = headers.get(header::HOST).and_then(|h| h.to_str().ok()) {
         s.delegates
-            .set_self_url_if_unknown(&format!("http://{host}"));
+            .set_self_url_if_unknown(&self_url_from_host(host, &s.config));
     }
     let url = req
         .url
@@ -173,7 +188,7 @@ pub async fn join_via(s: &AppState, url: &str) -> Result<()> {
     let req = JoinRequest {
         id: s.id.clone(),
         url: (!me.url.is_empty()).then_some(me.url),
-        port: s.config.listen_port(),
+        port: s.config.port,
         models: me.models,
     };
     let resp: TableResponse = s
@@ -387,5 +402,39 @@ pub async fn sync_loop(s: Arc<AppState>) {
     loop {
         tick.tick().await;
         sync_once(&s).await;
+    }
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::*;
+    use crate::config::Config;
+
+    #[test]
+    fn masquerading_advertises_the_tokenshare_port_whatever_port_was_used() {
+        let m = Config {
+            masquerade: true,
+            port: 11343,
+            ..Config::default()
+        };
+        for host in [
+            "10.0.0.5:11434",
+            "10.0.0.5:11343",
+            "10.0.0.5",
+            "box.lan:11434",
+        ] {
+            let name = host.split(':').next().unwrap();
+            assert_eq!(self_url_from_host(host, &m), format!("http://{name}:11343"));
+        }
+        assert_eq!(
+            self_url_from_host("[fd00::5]:11434", &m),
+            "http://[fd00::5]:11343"
+        );
+    }
+
+    #[test]
+    fn without_masquerade_the_host_is_used_as_given() {
+        let c = Config::default();
+        assert_eq!(self_url_from_host("10.0.0.5:9", &c), "http://10.0.0.5:9");
     }
 }

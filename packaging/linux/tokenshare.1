@@ -75,12 +75,15 @@ Overrides
 .BR \-\-ollama\-host .
 .TP
 .B \-\-masquerade
-Listen on port 11434, ollama's own port, so applications already pointed at
-ollama use the pool unchanged.
+Also listen on port 11434, ollama's own port, so applications already pointed
+at ollama use the pool unchanged.
+The tokenshare port stays open for other delegates and acts as a delegate with
+no models: requests arriving there are forwarded to other delegates and never
+served from the local ollama, and this machine's models are not advertised.
 Move the local ollama to another port first, for example
 .BR "OLLAMA_HOST=127.0.0.1:11435" ,
 and list that address as the ollama host.
-The delegate refuses to start if an ollama host points back at itself or if the
+The delegate refuses to start if an ollama host points back at itself or if a
 port is in use.
 .TP
 .BI \-\-pool\-size " N"
@@ -100,8 +103,9 @@ Listen port.
 Default 11343.
 .TP
 .B masquerade
-Listen on 11434 instead of
-.BR port .
+Also listen on 11434, ollama's own port, for ollama clients.
+.B port
+then serves other delegates only, as a delegate with no models.
 Default false.
 .TP
 .B fc

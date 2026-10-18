@@ -64,20 +64,62 @@ impl Default for Config {
     }
 }
 
+/// What a listening port does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Face {
+    /// The ollama API: serves from the local ollama and the pool.
+    Ollama,
+    /// The tokenshare port when masquerading: a delegate with no models. It
+    /// joins and gossips with other delegates, and forwards requests to them,
+    /// but never serves from (or lists) the local ollama.
+    Mesh,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Listener {
+    pub port: u16,
+    pub face: Face,
+}
+
 impl Config {
-    /// The port we actually listen on.
-    pub fn listen_port(&self) -> u16 {
-        if self.masquerade {
-            OLLAMA_PORT
+    /// The ports to bind. `port` (the tokenshare port) is always one of them. With
+    /// `masquerade`, ollama's own port 11434 is bound too for ollama clients, and
+    /// `port` becomes a mesh-only listener so this machine can still advertise
+    /// itself to other delegates.
+    pub fn listeners(&self) -> Vec<Listener> {
+        if self.masquerade && self.port != OLLAMA_PORT {
+            vec![
+                Listener {
+                    port: self.port,
+                    face: Face::Mesh,
+                },
+                Listener {
+                    port: OLLAMA_PORT,
+                    face: Face::Ollama,
+                },
+            ]
         } else {
-            self.port
+            vec![Listener {
+                port: self.port,
+                face: Face::Ollama,
+            }]
         }
+    }
+
+    pub fn listen_ports(&self) -> Vec<u16> {
+        self.listeners().iter().map(|l| l.port).collect()
+    }
+
+    /// Whether other delegates may use this machine's ollama. Masquerading
+    /// implies not: peers reach it on the mesh port, which has no models.
+    pub fn shares_models(&self) -> bool {
+        self.share_with_peers && !self.masquerade
     }
 
     /// Configured ollama hosts that are really this delegate (a loopback address
     /// on our own listen port), which would make requests loop back into us.
     pub fn self_loop_hosts(&self) -> Vec<String> {
-        let port = self.listen_port();
+        let ports = self.listen_ports();
         self.ollama_hosts
             .iter()
             .map(|h| crate::ollama::normalize_host(h))
@@ -92,7 +134,7 @@ impl Config {
                     host.trim_matches(|c| c == '[' || c == ']'),
                     "localhost" | "127.0.0.1" | "::1" | "0.0.0.0"
                 );
-                loopback && p == Some(port)
+                loopback && p.is_some_and(|p| ports.contains(&p))
             })
             .collect()
     }
@@ -191,17 +233,62 @@ mod tests {
     }
 
     #[test]
-    fn masquerade_listens_on_ollamas_port() {
-        let mut c = Config {
+    fn plain_delegate_listens_on_one_port() {
+        let c = Config {
             port: 12000,
             ..Config::default()
         };
-        assert_eq!(c.listen_port(), 12000);
-        c.masquerade = true;
-        assert_eq!(c.listen_port(), 11434);
         assert_eq!(
-            c.port, 12000,
-            "the normal port is kept for when masquerade is off"
+            c.listeners(),
+            vec![Listener {
+                port: 12000,
+                face: Face::Ollama
+            }]
+        );
+        assert!(c.shares_models());
+    }
+
+    #[test]
+    fn masquerade_adds_ollamas_port_and_makes_the_tokenshare_port_mesh_only() {
+        let c = Config {
+            port: 12000,
+            masquerade: true,
+            ..Config::default()
+        };
+        assert_eq!(
+            c.listeners(),
+            vec![
+                Listener {
+                    port: 12000,
+                    face: Face::Mesh
+                },
+                Listener {
+                    port: 11434,
+                    face: Face::Ollama
+                },
+            ]
+        );
+        assert_eq!(c.listen_ports(), vec![12000, 11434]);
+        assert!(
+            !c.shares_models(),
+            "peers get no models from a masquerading machine"
+        );
+        assert_eq!(c.port, 12000, "the tokenshare port is unchanged");
+    }
+
+    #[test]
+    fn masquerading_on_ollamas_own_port_is_a_single_full_listener() {
+        let c = Config {
+            port: 11434,
+            masquerade: true,
+            ..Config::default()
+        };
+        assert_eq!(
+            c.listeners(),
+            vec![Listener {
+                port: 11434,
+                face: Face::Ollama
+            }]
         );
     }
 
@@ -225,6 +312,16 @@ mod tests {
                 "http://127.0.0.1:11434",
                 "http://[::1]:11434"
             ]
+        );
+        // The tokenshare port counts too while masquerading.
+        assert_eq!(
+            Config {
+                masquerade: true,
+                ollama_hosts: vec!["127.0.0.1:11343".into()],
+                ..Config::default()
+            }
+            .self_loop_hosts(),
+            vec!["http://127.0.0.1:11343"]
         );
         // Without masquerade we listen on 11343, so 11434 is a real ollama.
         assert!(Config {

@@ -9,4 +9,4 @@ pub mod status;
 pub mod table;
 
 pub use config::Config;
-pub use proxy::{poll_local_table, router, serve, AppState};
+pub use proxy::{poll_local_table, router, router_for, serve, serve_face, AppState};
