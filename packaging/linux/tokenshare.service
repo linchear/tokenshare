@@ -1,13 +1,12 @@
-# Install as a systemd user service:
-#   install -Dm755 tokenshare ~/.local/bin/tokenshare
-#   install -Dm644 tokenshare.service ~/.config/systemd/user/tokenshare.service
+# systemd user service for the Token Share delegate.
 #   systemctl --user enable --now tokenshare
+# Configuration: ~/.config/tokenshare/config.toml (see /usr/share/doc/tokenshare/).
 [Unit]
 Description=Token Share delegate
 After=network-online.target
 
 [Service]
-ExecStart=%h/.local/bin/tokenshare
+ExecStart=/usr/bin/tokenshare
 Restart=on-failure
 
 [Install]

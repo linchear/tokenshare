@@ -211,15 +211,26 @@ startup, health), `crates/tokenshare` (headless daemon), `crates/tray`
 (menubar/taskbar app; a stub on Linux). Design notes are in `design/`;
 `design/plan.md` records the decisions and what was built.
 
-## Building for Windows from macOS or Linux
+## Packaging
+
+Both scripts cross-compile from macOS (or Linux) and need the toolchains noted
+at the top of each.
 
 ```bash
-brew install mingw-w64            # or your distro's mingw-w64 package
-rustup target add x86_64-pc-windows-gnu
-packaging/windows/build-from-unix.sh
+packaging/windows/build-zip.sh   # target/x86_64-pc-windows-gnu/tokenshare-windows-x64.zip
+packaging/linux/build-deb.sh     # target/deb/tokenshare_<version>_amd64.deb
 ```
 
-This writes `target/x86_64-pc-windows-gnu/tokenshare-windows-x64.zip` containing
-`tokenshare-tray.exe`, `tokenshare.exe` and `WebView2Loader.dll` (keep the DLL next
-to the tray exe). The binaries have not been run on Windows; CI builds natively on
-`windows-latest`.
+- **Windows** (`brew install mingw-w64`): the zip holds `tokenshare-tray.exe`,
+  `tokenshare.exe` and `WebView2Loader.dll`, which must stay next to the tray
+  exe. Unzip anywhere and run the tray exe.
+- **Linux** (`brew install zig dpkg`, `cargo install cargo-zigbuild`): the
+  `.deb` installs `/usr/bin/tokenshare`, a systemd *user* unit, and an example
+  config under `/usr/share/doc/tokenshare/`. It is built against glibc 2.17 and
+  needs only libc. After `sudo apt install ./tokenshare_*_amd64.deb`, run
+  `systemctl --user enable --now tokenshare`; configuration is read from
+  `~/.config/tokenshare/config.toml`. To keep it running without a login
+  session, `loginctl enable-linger $USER`.
+
+The cross-built binaries have not been run on Windows or Linux by the author of
+this note; CI builds natively on both.

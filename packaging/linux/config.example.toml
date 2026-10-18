@@ -1,0 +1,13 @@
+# Copy to ~/.config/tokenshare/config.toml. Every key is optional.
+
+# Another delegate to join through at startup.
+# fc = "http://192.168.2.3:11343"
+
+# Ollama instances reachable from this machine.
+ollama_hosts = ["http://localhost:11434"]
+
+# Max concurrent requests sent to ollama.
+pool_size = 3
+
+# Listen port.
+port = 11343
