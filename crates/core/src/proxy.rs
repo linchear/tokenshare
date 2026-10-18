@@ -339,6 +339,11 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
         if path == "/api/version" && (!on_ollama_port || s.table.first_up().is_none()) {
             return Json(json!({ "version": ADVERTISED_VERSION })).into_response();
         }
+        // `ollama ps` lists models running on this machine; with no local ollama
+        // that is an empty list, not an error.
+        if path == "/api/ps" && (!on_ollama_port || s.table.first_up().is_none()) {
+            return Json(json!({ "models": [] })).into_response();
+        }
     }
 
     let bytes = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
@@ -358,8 +363,14 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
         body: &bytes,
     };
 
-    if !INFERENCE_PATHS.contains(&path.as_str()) {
-        // Everything else (pull, show, version, ...) is local ollama only.
+    // `ollama run` looks the model up with /api/show before chatting. It is
+    // addressed by model like inference, so it goes wherever the model is, but it
+    // is cheap and must not need (or wait for) a pool slot.
+    let needs_slot = INFERENCE_PATHS.contains(&path.as_str());
+    let model_routed = needs_slot || (path == "/api/show" && parts.method == Method::POST);
+
+    if !model_routed {
+        // Everything else (pull, version, ...) is local ollama only.
         let Some(host) = s.table.first_up().filter(|_| on_ollama_port) else {
             return error(StatusCode::SERVICE_UNAVAILABLE, "no local ollama available");
         };
@@ -379,10 +390,15 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
         return r;
     }
 
-    let Some(model) = serde_json::from_slice::<Value>(&bytes)
-        .ok()
-        .and_then(|v| v["model"].as_str().map(str::to_string))
-    else {
+    // Older clients send the model as "name"; some (the ollama CLI's `show`) send
+    // both with "model" empty, so an empty one does not count.
+    let Some(model) = serde_json::from_slice::<Value>(&bytes).ok().and_then(|v| {
+        [&v["model"], &v["name"]]
+            .into_iter()
+            .filter_map(|f| f.as_str())
+            .find(|m| !m.is_empty())
+            .map(str::to_string)
+    }) else {
         return error(StatusCode::BAD_REQUEST, "request has no model");
     };
     let mut visited = visited_ids(&parts.headers);
@@ -408,7 +424,12 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
     let has_local = on_ollama_port || forwarded;
     let local_host = s.table.host_for_model(&model).filter(|_| has_local);
     if let Some(host) = &local_host {
-        if let Some(permit) = s.pool.try_acquire() {
+        let permit = if needs_slot {
+            s.pool.try_acquire().map(Some)
+        } else {
+            Some(None)
+        };
+        if let Some(permit) = permit {
             return match out.send(format!("{host}{path_and_query}"), None).await {
                 Ok(resp) => {
                     log(host, resp.status().as_u16());

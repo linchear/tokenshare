@@ -98,6 +98,22 @@ pub async fn mock_ollama(models: &[&str], chunk_delay_ms: u64) -> Mock {
         .route(
             "/api/version",
             get(|| async { Json(json!({"version": "mock"})) }),
+        )
+        // What `ollama run` asks first: model details, including capabilities.
+        .route(
+            "/api/show",
+            post(|Json(req): Json<Value>| async move {
+                let model = req["model"].as_str().or(req["name"].as_str()).unwrap_or("");
+                Json(json!({
+                    "model": model,
+                    "details": {"family": "mock"},
+                    "capabilities": ["completion"],
+                }))
+            }),
+        )
+        .route(
+            "/api/ps",
+            get(|| async { Json(json!({"models": [{"name": "running-here"}]})) }),
         );
     Mock {
         url: serve_plain(app).await,

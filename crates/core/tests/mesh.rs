@@ -703,8 +703,12 @@ async fn a_client_only_delegate_borrows_the_pools_ollama() {
         .await
         .unwrap();
     assert_eq!(tags["models"][0]["name"], "gemma2:latest");
+    // Pulling is local-only; with no local ollama there is nowhere to pull to.
     assert_eq!(
-        reqwest::get(format!("{}/api/ps", c.url))
+        reqwest::Client::new()
+            .post(format!("{}/api/pull", c.url))
+            .json(&json!({ "model": "gemma2" }))
+            .send()
             .await
             .unwrap()
             .status(),
@@ -840,4 +844,101 @@ async fn the_mesh_port_of_a_masquerading_delegate_also_answers_what_clients_chec
         "direct clients on the mesh port do not get the local ollama"
     );
     assert!(v["version"].as_str().is_some_and(|s| !s.is_empty()));
+}
+
+// ---- `ollama run` and `ollama ps` against a delegate with no local ollama ----
+
+async fn post_show(url: &str, model: &str) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{url}/api/show"))
+        .json(&json!({ "model": model }))
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn show_is_answered_by_a_peer_that_has_the_model() {
+    let a = node(NodeOpts {
+        models: &["gemma2:latest"],
+        ..Default::default()
+    })
+    .await;
+    let c = node(NodeOpts {
+        client_only: true,
+        fc: Some(&a.url),
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(rejoin(&c.state).await, Some(true));
+    converged(&[&a, &c]).await;
+
+    // `ollama run gemma2` starts with this; it used to fail with "no local ollama".
+    let resp = post_show(&c.url, "gemma2").await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["details"]["family"], "mock");
+    assert_eq!(body["capabilities"][0], "completion");
+    // The legacy "name" field works too.
+    let legacy = reqwest::Client::new()
+        .post(format!("{}/api/show", c.url))
+        .json(&json!({ "name": "gemma2" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(legacy.status(), 200);
+    // `ollama show` sends an empty "model" next to the real "name".
+    let both = reqwest::Client::new()
+        .post(format!("{}/api/show", c.url))
+        .json(&json!({ "model": "", "name": "gemma2" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(both.status(), 200);
+    // A model nobody has is a 404, which is what makes the CLI offer to pull it.
+    assert_eq!(post_show(&c.url, "nope").await.status(), 404);
+}
+
+#[tokio::test]
+async fn show_does_not_need_a_free_pool_slot() {
+    let a = node(NodeOpts {
+        models: &["gemma2:latest"],
+        pool: 1,
+        chunk_delay_ms: 150,
+        ..Default::default()
+    })
+    .await;
+    let held = post_chat(&a.url, "gemma2").await; // takes the only slot
+    assert_eq!(held.status(), 200);
+    assert_eq!(a.state.pool.in_use(), 1);
+    assert_eq!(post_show(&a.url, "gemma2").await.status(), 200);
+    drop(held);
+}
+
+#[tokio::test]
+async fn ps_is_empty_without_a_local_ollama_and_passed_through_with_one() {
+    let a = node(NodeOpts {
+        models: &["gemma2:latest"],
+        ..Default::default()
+    })
+    .await;
+    let c = node(NodeOpts {
+        client_only: true,
+        ..Default::default()
+    })
+    .await;
+    let none: Value = reqwest::get(format!("{}/api/ps", c.url))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(none["models"].as_array().unwrap().len(), 0);
+    let local: Value = reqwest::get(format!("{}/api/ps", a.url))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(local["models"][0]["name"], "running-here");
 }

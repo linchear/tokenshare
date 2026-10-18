@@ -163,6 +163,13 @@ the digest is a stand-in hash of the name, the size is 0 and the time is when th
 peer was last heard from. `ollama ls` needs a digest on every entry and crashes
 without one.
 
+`ollama run` and `ollama show` start with `POST /api/show`, which is routed by
+model like a chat request (to this machine's ollama if it has the model, else to
+a peer that does), but does not use a pool slot. `ollama ps` with no local ollama
+returns an empty list. Other endpoints (`pull`, `create`, `delete`, ...) still
+need a local ollama and return 503 without one; a model nobody has is a 404,
+which makes the CLI offer to pull it.
+
 **Client only.** Ollama hosts are optional. With none (`ollama_hosts = []`, the
 `--client-only` flag, or an empty field in Settings) the delegate serves nothing
 itself and forwards every model request to a delegate that has the model, so
