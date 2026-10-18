@@ -48,6 +48,7 @@ pub fn status_json(s: &AppState) -> Value {
     json!({
         "id": s.id,
         "state": health(s),
+        "draining": s.is_draining(),
         "pool": { "size": s.pool.size(), "in_use": s.pool.in_use(), "forwarding": s.pool.forwarding() },
         "ollama": hosts,
         "delegates": s.delegates.shared_entries(),

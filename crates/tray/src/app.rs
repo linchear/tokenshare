@@ -205,7 +205,7 @@ pub fn run() {
             }
             Event::UserEvent(UserEvent::Menu(e)) if e.id == quit_id => {
                 if let Some(r) = running.take() {
-                    if let Err(e) = rt.block_on(r.stop()) {
+                    if let Err(e) = rt.block_on(r.stop(Duration::from_secs(5))) {
                         tracing::warn!(error = %e, "shutdown");
                     }
                 }

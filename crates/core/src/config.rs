@@ -31,6 +31,8 @@ pub struct Config {
     pub keepalive_ttl: u8,
     /// How often to pull and merge the full table from one random peer.
     pub sync_interval_secs: u64,
+    /// On shutdown, how long to let in-flight requests finish before cutting them off.
+    pub shutdown_grace_secs: u64,
 }
 
 impl Default for Config {
@@ -46,6 +48,7 @@ impl Default for Config {
             keepalive_interval_secs: 30,
             keepalive_ttl: 3,
             sync_interval_secs: 60,
+            shutdown_grace_secs: 30,
         }
     }
 }

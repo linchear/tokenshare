@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -52,6 +53,9 @@ pub struct AppState {
     pub client: reqwest::Client,
     /// Keepalive message IDs already handled, so relays cannot loop.
     seen_keepalives: Mutex<HashMap<String, Instant>>,
+    draining: AtomicBool,
+    /// Flips to true to abort every response still streaming.
+    cutoff: tokio::sync::watch::Sender<bool>,
 }
 
 impl AppState {
@@ -74,7 +78,23 @@ impl AppState {
             config,
             client,
             seen_keepalives: Mutex::new(HashMap::new()),
+            draining: AtomicBool::new(false),
+            cutoff: tokio::sync::watch::channel(false).0,
         })
+    }
+
+    /// Stop taking new model requests (in-flight ones continue).
+    pub fn begin_drain(&self) {
+        self.draining.store(true, Ordering::SeqCst);
+    }
+
+    /// Abort all responses still streaming; clients see a broken stream.
+    pub fn cut_off_all(&self) {
+        self.cutoff.send_replace(true);
+    }
+
+    pub fn is_draining(&self) -> bool {
+        self.draining.load(Ordering::SeqCst)
     }
 
     /// True the first time `msg_id` is seen. Old IDs are forgotten after 10 minutes.
@@ -215,14 +235,42 @@ impl Outbound<'_> {
 /// Stream an upstream response to the client without buffering it. The pool
 /// permit, if any, rides in the stream so the slot is held until the response
 /// ends or the client disconnects (dropping the body drops the upstream
-/// connection too, which makes ollama stop generating).
-fn stream_response<H: Send + 'static>(resp: reqwest::Response, held: H) -> Response {
+/// connection too, which makes ollama stop generating). If the delegate is cut
+/// off during shutdown, the stream ends with an error so the client never
+/// mistakes a truncated response for a complete one.
+fn stream_response<H: Send + 'static>(
+    resp: reqwest::Response,
+    held: H,
+    cutoff: tokio::sync::watch::Receiver<bool>,
+) -> Response {
     let status = resp.status();
     let headers = copy_headers(resp.headers());
-    let stream = resp.bytes_stream().map(move |chunk| {
-        let _held = &held;
-        chunk
-    });
+    let inner = resp
+        .bytes_stream()
+        .map(|r| r.map_err(axum::BoxError::from))
+        .boxed();
+    let stream = futures_util::stream::unfold(
+        (inner, cutoff, held, false),
+        |(mut inner, cutoff, held, done)| async move {
+            if done {
+                return None;
+            }
+            // The waiter borrows a clone, so the state tuple can move freely.
+            let mut waiter = cutoff.clone();
+            let cut = tokio::select! {
+                biased;
+                _ = waiter.wait_for(|v| *v) => None,
+                next = inner.next() => Some(next),
+            };
+            match cut {
+                None => {
+                    let err = axum::BoxError::from("delegate shut down mid-response");
+                    Some((Err(err), (inner, cutoff, held, true)))
+                }
+                Some(next) => next.map(|item| (item, (inner, cutoff, held, false))),
+            }
+        },
+    );
     let mut out = Response::new(Body::from_stream(stream));
     *out.status_mut() = status;
     *out.headers_mut() = headers;
@@ -261,12 +309,19 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
             return error(StatusCode::SERVICE_UNAVAILABLE, "no ollama host available");
         };
         return match out.send(format!("{host}{path_and_query}"), None).await {
-            Ok(resp) => stream_response(resp, ()),
+            Ok(resp) => stream_response(resp, (), s.cutoff.subscribe()),
             Err(e) => {
                 warn!(path, host, error = %e, "ollama request failed");
                 error(StatusCode::BAD_GATEWAY, "ollama request failed")
             }
         };
+    }
+
+    if s.is_draining() {
+        let mut r = error(StatusCode::SERVICE_UNAVAILABLE, "delegate is shutting down");
+        r.headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+        return r;
     }
 
     let Some(model) = serde_json::from_slice::<Value>(&bytes)
@@ -291,7 +346,7 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
             return match out.send(format!("{host}{path_and_query}"), None).await {
                 Ok(resp) => {
                     log(host, resp.status().as_u16());
-                    stream_response(resp, permit)
+                    stream_response(resp, permit, s.cutoff.subscribe())
                 }
                 Err(e) => {
                     warn!(path, host, error = %e, "ollama request failed");
@@ -322,7 +377,7 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
             {
                 Ok(resp) if resp.status().is_success() => {
                     log(&peer.url, resp.status().as_u16());
-                    return stream_response(resp, guard.take());
+                    return stream_response(resp, guard.take(), s.cutoff.subscribe());
                 }
                 Ok(resp) => {
                     info!(peer = %peer.url, status = resp.status().as_u16(), "peer declined, trying next")

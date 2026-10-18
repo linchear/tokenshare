@@ -61,7 +61,7 @@ async fn main() -> Result<()> {
     let data_dir = default_data_dir().context("no home directory for data dir")?;
     let running = daemon::start(config, data_dir).await?;
     shutdown_signal().await;
-    running.stop().await
+    running.stop_gracefully().await
 }
 
 async fn shutdown_signal() {

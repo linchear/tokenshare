@@ -107,7 +107,11 @@ Original scope:
 - macOS menubar `.app` and Windows tray exe packaging. The tray exists on these two platforms only.
 - Linux is headless: no tray or UI. Package the daemon as a binary (plus a .deb and a systemd user unit). Status is available through `/_ts/status` and logs.
 
-**Phase 6, Hardening and docs**
+**Phase 6, Hardening and docs (done)**
+
+As built: `Running::stop(grace)` stops gossip, sets a draining flag (new model requests get 503), waits for in-flight local and forwarded requests up to `shutdown_grace_secs` (default 30; the tray uses 5), then cuts remaining streams with an error via a shared cutoff signal and closes the listener. `README.md` documents the protocol, config, platforms, limits and the deviations from the design doc. Not done: a .deb, Windows service packaging, a CI release workflow, auth.
+
+Original scope:
 - Graceful shutdown with in-flight drain.
 - README, including the full-mesh scaling limit.
 - Later options: partial gossip views, metrics, auth.
