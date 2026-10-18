@@ -1016,3 +1016,33 @@ async fn a_forgotten_dead_delegate_is_not_resurrected_by_gossip_but_returns_when
     }
     assert!(b.state.delegates.peers().iter().any(|p| p.id == c.state.id));
 }
+
+#[tokio::test]
+async fn the_forget_endpoint_removes_a_delegate_for_requests_from_this_machine() {
+    let (a, b, c) = three_nodes().await;
+    converged(&[&a, &b, &c]).await;
+    let post = |id: String| {
+        let url = format!("{}/_ts/forget", b.url);
+        async move {
+            reqwest::Client::new()
+                .post(url)
+                .json(&json!({ "id": id }))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let resp = post(c.state.id.clone()).await; // the test connects over loopback
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.json::<Value>().await.unwrap()["forgotten"], true);
+    assert!(b.state.delegates.peers().iter().all(|p| p.id != c.state.id));
+    // Unknown, already gone, and ourselves are all "not forgotten", not errors.
+    for id in [
+        c.state.id.clone(),
+        "no-such-id".to_string(),
+        b.state.id.clone(),
+    ] {
+        let v = post(id).await.json::<Value>().await.unwrap();
+        assert_eq!(v["forgotten"], false);
+    }
+}

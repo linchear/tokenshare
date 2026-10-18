@@ -1,19 +1,23 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use tokenshare_core::config::{default_config_path, default_data_dir};
 use tokenshare_core::{daemon, Config};
 use tracing::info;
 
+mod cli;
+
 #[derive(Parser)]
 #[command(version, about = "Route ollama calls amongst several hosts")]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Cmd>,
     /// Config file (TOML). Defaults to the per-user config dir.
-    #[arg(long)]
+    #[arg(long, global = true)]
     config: Option<PathBuf>,
-    /// Listen port (default 11343).
-    #[arg(long)]
+    /// Listen port (default 11343). With a command: the port of the delegate to ask.
+    #[arg(long, global = true)]
     port: Option<u16>,
     /// First-contact delegate URL.
     #[arg(long)]
@@ -38,6 +42,20 @@ struct Args {
     pool_size: Option<usize>,
 }
 
+/// Commands for the delegate already running on this machine. Without one,
+/// `tokenshare` runs a delegate.
+#[derive(Subcommand)]
+enum Cmd {
+    /// List the delegates this machine knows about.
+    Delegates,
+    /// Forget a delegate, for example one that is gone for good. It stays out
+    /// until it is heard from again.
+    Forget {
+        /// Its id, the start of its id (4+ characters), or its URL.
+        target: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -53,6 +71,12 @@ async fn main() -> Result<()> {
     };
     if let Some(p) = args.port {
         config.port = p;
+    }
+    if let Some(cmd) = &args.command {
+        return match cmd {
+            Cmd::Delegates => cli::list(config.port).await,
+            Cmd::Forget { target } => cli::forget(config.port, target).await,
+        };
     }
     if args.fc.is_some() {
         config.fc = args.fc;

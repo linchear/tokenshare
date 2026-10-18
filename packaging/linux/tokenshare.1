@@ -19,6 +19,21 @@ tokenshare \- route ollama requests among several machines
 .IR PORT ]
 .RB [ \-\-pool\-size
 .IR N ]
+.br
+.B tokenshare
+.RB [ \-\-config
+.IR FILE ]
+.RB [ \-\-port
+.IR PORT ]
+.B delegates
+.br
+.B tokenshare
+.RB [ \-\-config
+.IR FILE ]
+.RB [ \-\-port
+.IR PORT ]
+.B forget
+.I TARGET
 .SH DESCRIPTION
 .B tokenshare
 runs a delegate: a small server that listens on one port (11343 by default) and
@@ -238,6 +253,24 @@ Default
 .BR info .
 Logs record request metrics (path, model, status, timing) and never request
 content.
+.SH COMMANDS
+These talk to the delegate already running on this machine (on
+.B \-\-port
+or the configured port).
+They only work from this machine: the delegate refuses them from the network.
+.TP
+.B delegates
+List the delegates this machine knows about, with their status, when each was
+last heard from, their address and their models.
+.TP
+.BI forget " TARGET"
+Forget a delegate, for example one that is gone for good.
+.I TARGET
+is its id, the start of its id (at least 4 characters), or its URL.
+It stays out of the table until it is heard from again with a newer timestamp,
+so forgetting a dead delegate sticks and forgetting a live one lasts only until
+its next keepalive.
+This delegate cannot forget itself.
 .SH FILES
 .TP
 .I ~/.config/tokenshare/config.toml

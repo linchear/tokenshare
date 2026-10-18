@@ -3302,6 +3302,8 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "reqwest",
+ "serde_json",
  "tokenshare-core",
  "tokio",
  "tracing",

@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use axum::extract::{ConnectInfo, State};
-use axum::http::{header, HeaderMap};
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
@@ -123,6 +124,39 @@ pub async fn announce(State(s): State<Arc<AppState>>, Json(msg): Json<Announce>)
         });
     }
     Json(json!({ "ok": true }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ForgetRequest {
+    pub id: String,
+}
+
+/// Whether `ip` is this machine talking to itself.
+pub fn is_local(ip: IpAddr) -> bool {
+    ip.is_loopback()
+        || matches!(ip, IpAddr::V6(v6) if v6.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback()))
+}
+
+/// Forget a delegate (the `tokenshare forget` command). There is no
+/// authentication, so this only answers to this machine; anyone on the network
+/// could otherwise knock delegates out of the table.
+pub async fn forget(
+    State(s): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Json(req): Json<ForgetRequest>,
+) -> Response {
+    if !is_local(addr.ip()) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "forgetting a delegate is only allowed from this machine" })),
+        )
+            .into_response();
+    }
+    let forgotten = s.delegates.forget(&req.id);
+    if forgotten {
+        info!(id = %req.id, "delegate forgotten on request");
+    }
+    Json(json!({ "forgotten": forgotten })).into_response()
 }
 
 pub async fn table(State(s): State<Arc<AppState>>) -> Json<TableResponse> {
@@ -442,5 +476,27 @@ mod url_tests {
     fn without_masquerade_the_host_is_used_as_given() {
         let c = Config::default();
         assert_eq!(self_url_from_host("10.0.0.5:9", &c), "http://10.0.0.5:9");
+    }
+}
+
+#[cfg(test)]
+mod local_tests {
+    use super::*;
+
+    #[test]
+    fn only_this_machine_counts_as_local() {
+        for ip in ["127.0.0.1", "127.1.2.3", "::1", "::ffff:127.0.0.1"] {
+            assert!(is_local(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in [
+            "10.0.0.5",
+            "100.94.167.47",
+            "192.168.1.9",
+            "fd00::5",
+            "::ffff:10.0.0.5",
+            "0.0.0.0",
+        ] {
+            assert!(!is_local(ip.parse().unwrap()), "{ip}");
+        }
     }
 }

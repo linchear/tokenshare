@@ -143,6 +143,7 @@ pub fn router_for(state: Arc<AppState>, face: Face) -> Router {
         .route("/_ts/announce", post(mesh::announce))
         .route("/_ts/keepalive", post(mesh::keepalive))
         .route("/_ts/table", get(mesh::table))
+        .route("/_ts/forget", post(mesh::forget))
         .fallback(proxy)
         .layer(axum::Extension(face))
         .with_state(state)

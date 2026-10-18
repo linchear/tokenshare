@@ -222,7 +222,10 @@ separate from the small status icons in the menubar/taskbar.
   mesh instead of circulating forever. A delegate that was only offline for a
   while returns by rejoining.
 - **Forget.** In the tray menu, under *Delegates*, each delegate has *Forget this
-  delegate*. It is removed and kept out (the choice is saved in
+  delegate*; headless machines use `tokenshare delegates` to list them and
+  `tokenshare forget <id|id-prefix|url>` to forget one (these ask the delegate
+  running on this machine, on `--port` or the configured port, and it refuses
+  them from anywhere else). It is removed and kept out (the choice is saved in
   `forgotten.json`) until it is heard from again with a newer `last_seen`, so
   forgetting a dead one sticks while forgetting one that is alive only lasts
   until its next keepalive.
