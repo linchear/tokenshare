@@ -230,7 +230,7 @@ packaging/linux/build-deb.sh     # target/deb/tokenshare_<version>_amd64.deb
   needs only libc. After `sudo apt install ./tokenshare_*_amd64.deb`, run
   `systemctl --user enable --now tokenshare`; configuration is read from
   `~/.config/tokenshare/config.toml`. To keep it running without a login
-  session, `loginctl enable-linger $USER`.
+  session, `loginctl enable-linger $USER`. Full guide: [docs/linux.md](docs/linux.md).
 
 The cross-built binaries have not been run on Windows or Linux by the author of
 this note; CI builds natively on both.
