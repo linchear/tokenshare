@@ -61,11 +61,11 @@ mod tests {
     #[test]
     fn messages_parse() {
         let save: Message = serde_json::from_str(
-            r#"{"cmd":"save","form":{"fc":"","advertise_url":"","ollama_hosts":"x","port":"1","pool_size":"2","share_with_peers":false,"masquerade":true},"force":true}"#,
+            r#"{"cmd":"save","form":{"fc":"","advertise_url":"","ollama_hosts":"x","port":"1","pool_size":"2","share_with_peers":false,"masquerade":true,"ollama_port":"12434"},"force":true}"#,
         )
         .unwrap();
         assert!(
-            matches!(save, Message::Save { form, force } if form.pool_size == "2" && !form.share_with_peers && form.masquerade && force)
+            matches!(save, Message::Save { form, force } if form.pool_size == "2" && !form.share_with_peers && form.masquerade && form.ollama_port == "12434" && force)
         );
         assert!(matches!(
             serde_json::from_str::<Message>(r#"{"cmd":"cancel"}"#).unwrap(),

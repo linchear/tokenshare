@@ -15,6 +15,8 @@ tokenshare \- route ollama requests among several machines
 .IR URL ]...
 .RB [ \-\-client\-only ]
 .RB [ \-\-masquerade ]
+.RB [ \-\-ollama\-port
+.IR PORT ]
 .RB [ \-\-pool\-size
 .IR N ]
 .SH DESCRIPTION
@@ -75,8 +77,9 @@ Overrides
 .BR \-\-ollama\-host .
 .TP
 .B \-\-masquerade
-Also listen on port 11434, ollama's own port, so applications already pointed
-at ollama use the pool unchanged.
+Also listen on the ollama port (11434 unless
+.B \-\-ollama\-port
+is given), so applications already pointed at ollama use the pool unchanged.
 The tokenshare port stays open for other delegates and acts as a delegate with
 no models: requests arriving there are forwarded to other delegates and never
 served from the local ollama, and this machine's models are not advertised.
@@ -85,6 +88,11 @@ Move the local ollama to another port first, for example
 and list that address as the ollama host.
 The delegate refuses to start if an ollama host points back at itself or if a
 port is in use.
+.TP
+.BI \-\-ollama\-port " PORT"
+Port for ollama clients when masquerading.
+Default 11434, ollama's own.
+Choose another to leave a local ollama on 11434.
 .TP
 .BI \-\-pool\-size " N"
 Maximum number of concurrent requests sent to the local ollama (default 3).
@@ -103,10 +111,16 @@ Listen port.
 Default 11343.
 .TP
 .B masquerade
-Also listen on 11434, ollama's own port, for ollama clients.
+Also listen on
+.BR ollama_port ,
+for ollama clients.
 .B port
 then serves other delegates only, as a delegate with no models.
 Default false.
+.TP
+.B ollama_port
+The port ollama clients use while masquerading.
+Default 11434, ollama's own.
 .TP
 .B fc
 First-contact delegate URL.

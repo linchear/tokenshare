@@ -47,15 +47,19 @@
     <div><label for="port">Listen port</label><input id="port" inputmode="numeric"></div>
   </div>
 
-  <label class="check"><input type="checkbox" id="masq"> Also listen on ollama's port (11434), as a masquerade</label>
-  <div class="hint">Lets apps that already talk to ollama's default port use the pool without any change. The listen port above stays open for other delegates, as a delegate with no models: while masquerading, this machine's ollama is not shared with them.</div>
-  <div id="masq-warn" class="callout"><b>This is ollama's own port.</b> Do not run a local ollama on 11434 at the same time: start it on another port (for example <code>OLLAMA_HOST=127.0.0.1:11435</code>) and list that address under Ollama hosts above.</div>
+  <label class="check"><input type="checkbox" id="masq"> <span>Also listen on the ollama port (<span class="oport">11434</span>), as a masquerade</span></label>
+  <div class="hint">Lets apps that already talk to ollama's port use the pool without any change. The listen port above stays open for other delegates, as a delegate with no models: while masquerading, this machine's ollama is not shared with them.</div>
+  <div id="masq-warn" class="callout"><b>This is ollama's own port.</b> Do not run a local ollama on <span class="oport">11434</span> at the same time: start it on another port (for example <code>OLLAMA_HOST=127.0.0.1:11435</code>) and list that address under Ollama hosts above.</div>
 
   <details>
     <summary>Advanced</summary>
     <label for="adv">Advertise URL</label>
     <input id="adv" placeholder="detected automatically">
     <div class="hint">How other delegates reach this machine. Set it only if the detected address is wrong, for example behind NAT.</div>
+
+    <label for="oport">Ollama port</label>
+    <input id="oport" inputmode="numeric" placeholder="11434">
+    <div class="hint">The port ollama clients use when masquerading. The default, 11434, is ollama's own, so apps already talking to ollama need no change. Choose another if a local ollama stays on 11434.</div>
   </details>
 
   <div id="errors"><ul></ul></div>
@@ -71,8 +75,9 @@
   $('fc').value = init.fc; $('hosts').value = init.ollama_hosts; $('pool').value = init.pool_size;
   $('port').value = init.port; $('share').checked = init.share_with_peers; $('adv').value = init.advertise_url;
   $('masq').checked = init.masquerade;
+  $('oport').value = init.ollama_port;
   let force = false;            // set after a warning, so the next Save goes through
-  if (init.advertise_url) $('adv').closest('details').open = true;
+  if (init.advertise_url || init.ollama_port !== '11434') $('adv').closest('details').open = true;
   // Ask the host to fit the window to the content so it never needs a scrollbar.
   function fit() { send({ cmd: 'resize', height: Math.ceil(document.body.scrollHeight) }); }
   function send(m) { window.ipc.postMessage(JSON.stringify(m)); }
@@ -94,11 +99,15 @@
     force = false; $('errors').style.display = 'none'; $('save').textContent = 'Save & Restart'; fit();
   }
   function syncMasq() {
-    $('masq-warn').style.display = $('masq').checked ? 'block' : 'none';
+    const port = $('oport').value.trim();
+    for (const el of document.querySelectorAll('.oport')) el.textContent = port || '…';
+    // Only ollama's own port clashes with a default local ollama.
+    $('masq-warn').style.display = $('masq').checked && port === '11434' ? 'block' : 'none';
     syncShare();
     fit();
   }
   $('masq').addEventListener('change', () => { syncMasq(); resetForce(); });
+  $('oport').addEventListener('input', () => { syncMasq(); resetForce(); });
   for (const id of ['port', 'hosts']) $(id).addEventListener('input', resetForce);
   $('cancel').onclick = () => send({ cmd: 'cancel' });
   $('f').onsubmit = e => {
@@ -106,7 +115,8 @@
     $('save').disabled = true; $('save').textContent = 'Restarting…';
     send({ cmd: 'save', force, form: { fc: $('fc').value, advertise_url: $('adv').value,
       ollama_hosts: $('hosts').value, port: $('port').value, pool_size: $('pool').value,
-      share_with_peers: $('share').checked, masquerade: $('masq').checked } });
+      share_with_peers: $('share').checked, masquerade: $('masq').checked,
+      ollama_port: $('oport').value } });
   };
   // WKWebView in an app without a working Edit menu ignores Cmd+A/C/X/V, so on
   // macOS we do them ourselves. Copy and paste go through the host's clipboard.

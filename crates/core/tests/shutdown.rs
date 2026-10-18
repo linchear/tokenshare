@@ -201,3 +201,60 @@ async fn a_masquerading_delegate_serves_on_both_ports_and_stops_them_both() {
         );
     }
 }
+
+fn free_port() -> u16 {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    l.local_addr().unwrap().port()
+}
+
+#[tokio::test]
+async fn the_configured_ollama_port_is_the_one_that_gets_bound() {
+    let mock = mock_ollama(&["gemma2:latest"], 0).await;
+    let (port, ollama_port) = (free_port(), free_port());
+    let config = Config {
+        port,
+        masquerade: true,
+        ollama_port,
+        ollama_hosts: vec![mock.url.clone()],
+        ..Config::default()
+    };
+    let dir = std::env::temp_dir().join(format!("ts-oport-{}", common::uuid_like()));
+    let running = daemon::start(config, dir).await.unwrap();
+    assert_eq!(running.ports(), vec![port, ollama_port]);
+
+    assert_eq!(
+        chat(&format!("http://127.0.0.1:{ollama_port}"))
+            .await
+            .status(),
+        200
+    );
+    assert_eq!(
+        chat(&format!("http://127.0.0.1:{port}")).await.status(),
+        404
+    );
+    running.stop(Duration::from_secs(5)).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_busy_ollama_port_is_reported_and_nothing_is_left_half_started() {
+    let mock = mock_ollama(&["gemma2:latest"], 0).await;
+    let blocker = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let busy = blocker.local_addr().unwrap().port();
+    let port = free_port();
+    let config = Config {
+        port,
+        masquerade: true,
+        ollama_port: busy,
+        ollama_hosts: vec![mock.url.clone()],
+        ..Config::default()
+    };
+    let dir = std::env::temp_dir().join(format!("ts-busy-{}", common::uuid_like()));
+    let err = daemon::start(config, dir).await.err().expect("must fail");
+    assert!(
+        err.to_string()
+            .contains(&format!("port {busy} is already in use")),
+        "{err:#}"
+    );
+    // The tokenshare port was not left bound by the failed start.
+    assert!(!tokenshare_core::config::port_in_use(port));
+}

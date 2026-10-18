@@ -21,6 +21,9 @@ pub struct Form {
     pub share_with_peers: bool,
     /// Listen on ollama's port (11434) so ollama clients work unchanged.
     pub masquerade: bool,
+    /// The port ollama clients use while masquerading (default 11434).
+    #[serde(default = "default_ollama_port")]
+    pub ollama_port: String,
 }
 
 impl Form {
@@ -33,6 +36,7 @@ impl Form {
             pool_size: c.pool_size.to_string(),
             share_with_peers: c.share_with_peers,
             masquerade: c.masquerade,
+            ollama_port: c.ollama_port.to_string(),
         }
     }
 }
@@ -92,6 +96,17 @@ pub fn apply(form: &Form, base: &Config) -> Result<Config, Vec<String>> {
 
     c.share_with_peers = form.share_with_peers;
     c.masquerade = form.masquerade;
+    match form.ollama_port.trim().parse::<u16>() {
+        Ok(p) if p > 0 => c.ollama_port = p,
+        _ => errors.push("Ollama port must be a number from 1 to 65535".into()),
+    }
+    if c.masquerade && c.ollama_port == c.port {
+        errors.push(format!(
+            "The ollama port must differ from the listen port ({}): other delegates \
+             reach this machine on the listen port",
+            c.port
+        ));
+    }
     for h in c.self_loop_hosts() {
         errors.push(format!(
             "Ollama host {h} would be this delegate itself (it listens on {}). \
@@ -105,6 +120,10 @@ pub fn apply(form: &Form, base: &Config) -> Result<Config, Vec<String>> {
     } else {
         Err(errors)
     }
+}
+
+fn default_ollama_port() -> String {
+    crate::config::OLLAMA_PORT.to_string()
 }
 
 fn ports_text(ports: &[u16]) -> String {
@@ -174,6 +193,60 @@ mod tests {
         assert!(c.masquerade);
         assert_eq!((c.port, c.listen_ports()), (12000, vec![12000, 11434]));
         assert!(Form::from_config(&c).masquerade);
+    }
+
+    #[test]
+    fn the_ollama_port_is_saved_and_validated() {
+        let f = Form {
+            masquerade: true,
+            ollama_port: " 12434 ".into(),
+            ollama_hosts: "http://localhost:11435".into(),
+            ..form()
+        };
+        let c = apply(&f, &Config::default()).unwrap();
+        assert_eq!(
+            (c.ollama_port, c.listen_ports()),
+            (12434, vec![11343, 12434])
+        );
+        assert_eq!(Form::from_config(&c).ollama_port, "12434");
+
+        for bad in ["", "0", "70000", "abc"] {
+            let f = Form {
+                ollama_port: bad.into(),
+                ..form()
+            };
+            let errors = apply(&f, &Config::default()).unwrap_err();
+            assert!(
+                errors.iter().any(|e| e.contains("Ollama port")),
+                "{bad}: {errors:?}"
+            );
+        }
+        // It may not collide with the tokenshare port while masquerading.
+        let same = Form {
+            masquerade: true,
+            ollama_port: "11343".into(),
+            ollama_hosts: "http://x:1".into(),
+            ..form()
+        };
+        assert!(apply(&same, &Config::default()).unwrap_err()[0].contains("must differ"));
+        let off = Form {
+            masquerade: false,
+            ..same
+        };
+        assert!(
+            apply(&off, &Config::default()).is_ok(),
+            "unused when not masquerading"
+        );
+    }
+
+    #[test]
+    fn a_custom_ollama_port_lets_a_local_ollama_stay_on_11434() {
+        let f = Form {
+            masquerade: true,
+            ollama_port: "12434".into(),
+            ..form() // default host is http://localhost:11434
+        };
+        assert!(apply(&f, &Config::default()).is_ok());
     }
 
     #[test]

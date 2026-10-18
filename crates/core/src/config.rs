@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_PORT: u16 = 11343;
 /// The port ollama itself uses by default.
+/// The port ollama itself uses by default, and the default for `ollama_port`.
 pub const OLLAMA_PORT: u16 = 11434;
 pub const DEFAULT_OLLAMA_HOST: &str = "http://localhost:11434";
 
@@ -14,9 +15,11 @@ pub const DEFAULT_OLLAMA_HOST: &str = "http://localhost:11434";
 pub struct Config {
     /// Port for both ollama and coordination traffic.
     pub port: u16,
-    /// Listen on ollama's own port (11434) instead of `port`, so existing
-    /// ollama clients work unchanged. Conflicts with a local ollama on that port.
+    /// Also listen on `ollama_port`, so existing ollama clients work unchanged. Conflicts with a local ollama on that port.
     pub masquerade: bool,
+    /// The port ollama clients are served on when `masquerade` is on. Ollama's own
+    /// default, 11434, lets apps that already talk to ollama use the pool unchanged.
+    pub ollama_port: u16,
     /// First-contact delegate, e.g. `http://192.168.2.3:11343`.
     pub fc: Option<String>,
     /// How peers reach this delegate. If unset, it is learned from the first
@@ -49,6 +52,7 @@ impl Default for Config {
         Self {
             port: DEFAULT_PORT,
             masquerade: false,
+            ollama_port: OLLAMA_PORT,
             fc: None,
             advertise_url: None,
             ollama_hosts: vec![DEFAULT_OLLAMA_HOST.to_string()],
@@ -83,18 +87,18 @@ pub struct Listener {
 
 impl Config {
     /// The ports to bind. `port` (the tokenshare port) is always one of them. With
-    /// `masquerade`, ollama's own port 11434 is bound too for ollama clients, and
-    /// `port` becomes a mesh-only listener so this machine can still advertise
-    /// itself to other delegates.
+    /// `masquerade`, `ollama_port` (11434 by default) is bound too for ollama
+    /// clients, and `port` becomes a mesh-only listener so this machine can still
+    /// advertise itself to other delegates.
     pub fn listeners(&self) -> Vec<Listener> {
-        if self.masquerade && self.port != OLLAMA_PORT {
+        if self.masquerade && self.port != self.ollama_port {
             vec![
                 Listener {
                     port: self.port,
                     face: Face::Mesh,
                 },
                 Listener {
-                    port: OLLAMA_PORT,
+                    port: self.ollama_port,
                     face: Face::Ollama,
                 },
             ]
@@ -277,7 +281,34 @@ mod tests {
     }
 
     #[test]
-    fn masquerading_on_ollamas_own_port_is_a_single_full_listener() {
+    fn the_ollama_facing_port_is_configurable() {
+        let c = Config {
+            port: 12000,
+            masquerade: true,
+            ollama_port: 12434,
+            ..Config::default()
+        };
+        assert_eq!(c.listen_ports(), vec![12000, 12434]);
+        assert_eq!(
+            Config {
+                masquerade: false,
+                ..c.clone()
+            }
+            .listen_ports(),
+            vec![12000],
+            "unused unless masquerading"
+        );
+        assert_eq!(Config::default().ollama_port, 11434);
+        // Hosts pointing back at the custom port are self-loops, 11434 is a real ollama.
+        let looped = Config {
+            ollama_hosts: vec!["localhost:12434".into(), "localhost:11434".into()],
+            ..c
+        };
+        assert_eq!(looped.self_loop_hosts(), vec!["http://localhost:12434"]);
+    }
+
+    #[test]
+    fn masquerading_on_the_ollama_port_itself_is_a_single_full_listener() {
         let c = Config {
             port: 11434,
             masquerade: true,

@@ -61,7 +61,8 @@ A TOML file; every key is optional. Command-line flags override it.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `port` | `11343` | Port for ollama and coordination traffic |
-| `masquerade` | `false` | Also listen on 11434, ollama's own port, for ollama clients; `port` then serves other delegates only (see below) |
+| `masquerade` | `false` | Also listen on `ollama_port` for ollama clients; `port` then serves other delegates only (see below) |
+| `ollama_port` | `11434` | The port ollama clients use while masquerading. 11434 is ollama's own, so existing apps need no change. Shown under *Advanced* in Settings |
 | `fc` | none | First-contact delegate URL |
 | `advertise_url` | learned | How peers reach this delegate (learned from the first delegate it joins) |
 | `ollama_hosts` | `["http://localhost:11434"]` | Ollama instances reachable from this machine. Optional: `[]` makes a client-only delegate |
@@ -125,7 +126,8 @@ in-flight requests.
 **Masquerade.** With `masquerade = true` (the *Also listen on ollama's port*
 checkbox, or `--masquerade`) the delegate listens on **two** ports:
 
-- **11434**, ollama's default port, with the full behavior: apps already pointed
+- **`ollama_port`** (11434 by default, ollama's own; `--ollama-port`, or *Ollama port*
+  under *Advanced* in Settings), with the full behavior: apps already pointed
   at ollama use the local ollama and the pool with no changes.
 - **`port`** (11343 by default), the tokenshare port, which is how other
   delegates reach it. This port acts as a delegate with **no models**: the
@@ -137,12 +139,13 @@ A masquerading machine therefore does not lend its ollama to others (the status
 endpoint reports `"sharing": false`), and the delegate advertises itself on the
 tokenshare port even if another delegate joined it through 11434.
 
-11434 is also the port a local ollama uses, so you cannot run both on it: start
-ollama on another port (for example `OLLAMA_HOST=127.0.0.1:11435`) and list that
-address as the ollama host. The delegate refuses to start if an ollama host
+11434 is also the port a local ollama uses, so you cannot run both on it. Either
+start ollama on another port (for example `OLLAMA_HOST=127.0.0.1:11435`) and
+list that address as the ollama host, or leave ollama alone and set a different
+`ollama_port` for the delegate (apps then need that port instead of 11434). The delegate refuses to start if an ollama host
 points back at itself (on either of its ports). If a port is already taken,
 Settings warns before saving (you can *Save Anyway*), and starting fails with
-"port 11434 is already in use". The check also catches ollama listening on
+"port 11434 is already in use" (naming whichever port it is). The check also catches ollama listening on
 127.0.0.1 only, which on macOS would otherwise quietly shadow the delegate for
 local clients. The menu shows "(masquerading)".
 
