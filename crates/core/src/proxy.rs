@@ -310,7 +310,7 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
     if !INFERENCE_PATHS.contains(&path.as_str()) {
         // Everything else (pull, show, version, ...) is local ollama only.
         let Some(host) = s.table.first_up() else {
-            return error(StatusCode::SERVICE_UNAVAILABLE, "no ollama host available");
+            return error(StatusCode::SERVICE_UNAVAILABLE, "no local ollama available");
         };
         return match out.send(format!("{host}{path_and_query}"), None).await {
             Ok(resp) => stream_response(resp, (), s.cutoff.subscribe()),

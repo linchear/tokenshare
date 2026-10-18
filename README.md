@@ -63,7 +63,7 @@ A TOML file; every key is optional. Command-line flags override it.
 | `port` | `11343` | Port for ollama and coordination traffic |
 | `fc` | none | First-contact delegate URL |
 | `advertise_url` | learned | How peers reach this delegate (learned from the first delegate it joins) |
-| `ollama_hosts` | `["http://localhost:11434"]` | Ollama instances reachable from this machine |
+| `ollama_hosts` | `["http://localhost:11434"]` | Ollama instances reachable from this machine. Optional: `[]` makes a client-only delegate |
 | `pool_size` | `3` | Max concurrent requests to ollama |
 | `share_with_peers` | `true` | Let other delegates use this machine's ollama (see below) |
 | `poll_interval_secs` | `10` | How often to refresh local models |
@@ -97,7 +97,7 @@ cargo run --release -p tokenshare -- --fc http://192.168.2.3:11343
 ```
 
 Flags: `--config`, `--port`, `--fc`, `--advertise-url`, `--ollama-host`
-(repeatable), `--pool-size`. Set `RUST_LOG` to change the log level. Logs list
+(repeatable), `--client-only`, `--pool-size`. Set `RUST_LOG` to change the log level. Logs list
 metrics only (method, path, model, target, status, time to first byte), never
 request content. On Linux, `packaging/linux/tokenshare.service` is a systemd
 user unit.
@@ -116,6 +116,14 @@ while any request is in flight (served here or forwarded), and a red **cross**
 or failed to start. The menu
 shows state, pool usage and the delegate list. Quit waits up to 5 seconds for
 in-flight requests.
+
+**Client only.** Ollama hosts are optional. With none (`ollama_hosts = []`, the
+`--client-only` flag, or an empty field in Settings) the delegate serves nothing
+itself and forwards every model request to a delegate that has the model, so
+machines without a GPU can just consume the pool. `/api/tags` still lists the
+pool's models; endpoints that only make sense locally (`pull`, `show`, ...)
+return 503. It reads as **down** until it has at least one online peer, and the
+menu shows "(client only)".
 
 **Not sharing.** With `share_with_peers = false` (the *Share my ollama with other
 delegates* checkbox in Settings) this delegate looks like its ollama is down to

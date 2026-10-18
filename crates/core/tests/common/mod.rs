@@ -169,6 +169,8 @@ pub struct NodeOpts<'a> {
     pub keepalive_interval_secs: Option<u64>,
     /// Let peers use this node's ollama (default true).
     pub share: bool,
+    /// No local ollama at all: a client-only delegate.
+    pub client_only: bool,
 }
 
 impl Default for NodeOpts<'_> {
@@ -182,6 +184,7 @@ impl Default for NodeOpts<'_> {
             id: None,
             keepalive_interval_secs: None,
             share: true,
+            client_only: false,
         }
     }
 }
@@ -195,7 +198,11 @@ pub async fn node(opts: NodeOpts<'_>) -> Node {
     let config = Config {
         port: addr.port(),
         fc: opts.fc.map(str::to_string),
-        ollama_hosts: vec![mock.url.clone()],
+        ollama_hosts: if opts.client_only {
+            vec![]
+        } else {
+            vec![mock.url.clone()]
+        },
         pool_size: opts.pool,
         share_with_peers: opts.share,
         keepalive_interval_secs: opts.keepalive_interval_secs.unwrap_or(30),

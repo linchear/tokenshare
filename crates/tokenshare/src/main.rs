@@ -24,6 +24,9 @@ struct Args {
     /// Ollama host; repeat for several.
     #[arg(long = "ollama-host")]
     ollama_hosts: Vec<String>,
+    /// Use no local ollama; only borrow other delegates' (overrides --ollama-host).
+    #[arg(long)]
+    client_only: bool,
     /// Max concurrent ollama connections (default 3).
     #[arg(long)]
     pool_size: Option<usize>,
@@ -51,7 +54,9 @@ async fn main() -> Result<()> {
     if args.advertise_url.is_some() {
         config.advertise_url = args.advertise_url;
     }
-    if !args.ollama_hosts.is_empty() {
+    if args.client_only {
+        config.ollama_hosts.clear();
+    } else if !args.ollama_hosts.is_empty() {
         config.ollama_hosts = args.ollama_hosts;
     }
     if let Some(n) = args.pool_size {

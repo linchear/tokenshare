@@ -33,9 +33,9 @@
   <input id="fc" placeholder="http://192.168.2.3:11343">
   <div class="hint">Another delegate to join through at startup. Leave blank to wait for others to join you.</div>
 
-  <label for="hosts">Ollama hosts</label>
+  <label for="hosts">Ollama hosts <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
   <textarea id="hosts" placeholder="http://localhost:11434"></textarea>
-  <div class="hint">Ollama instances reachable from this machine, one per line.</div>
+  <div class="hint">Ollama instances reachable from this machine, one per line. Leave empty to only use other delegates' ollama.</div>
 
   <label class="check"><input type="checkbox" id="share"> Share my ollama with other delegates</label>
   <div class="hint">Turn off to look unavailable to other delegates: they will not send you requests. You can still use your own ollama and theirs.</div>
@@ -107,6 +107,14 @@
   });
   document.querySelector('details').addEventListener('toggle', fit);
   window.addEventListener('load', fit);
+  // Nothing to share without a local ollama.
+  function syncShare() {
+    const none = $('hosts').value.trim() === '';
+    $('share').disabled = none;
+    $('share').closest('label').style.opacity = none ? '.5' : '1';
+  }
+  $('hosts').addEventListener('input', syncShare);
+  syncShare();
   $('fc').focus();
 </script>
 </body>

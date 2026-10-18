@@ -668,3 +668,72 @@ async fn a_sharing_delegate_is_still_used_by_others() {
     assert_eq!(models_of(&c, &a), vec!["gemma2:latest".to_string()]);
     assert_eq!(post_chat(&c.url, "gemma2").await.status(), 200);
 }
+
+// ---- client-only delegates (no local ollama) ----
+
+#[tokio::test]
+async fn a_client_only_delegate_borrows_the_pools_ollama() {
+    let a = node(NodeOpts {
+        models: &["gemma2:latest"],
+        ..Default::default()
+    })
+    .await;
+    let c = node(NodeOpts {
+        client_only: true,
+        fc: Some(&a.url),
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(rejoin(&c.state).await, Some(true));
+    converged(&[&a, &c]).await;
+
+    // Everything is served by A; C uses no slot and advertises nothing.
+    let resp = post_chat(&c.url, "gemma2").await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap().lines().count(), 3);
+    assert_eq!(c.state.pool.in_use(), 0);
+    assert!(models_of(&a, &c).is_empty());
+    assert_eq!(post_chat(&c.url, "nope").await.status(), 404);
+
+    // It can list the pool's models, but local-only endpoints have nowhere to go.
+    let tags: Value = reqwest::get(format!("{}/api/tags", c.url))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(tags["models"][0]["name"], "gemma2:latest");
+    assert_eq!(
+        reqwest::get(format!("{}/api/version", c.url))
+            .await
+            .unwrap()
+            .status(),
+        503
+    );
+
+    let status: Value = reqwest::get(format!("{}/_ts/status", c.url))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(status["state"], "active");
+    assert_eq!(status["ollama"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn a_client_only_delegate_with_nobody_to_talk_to_is_down() {
+    let c = node(NodeOpts {
+        client_only: true,
+        ..Default::default()
+    })
+    .await;
+    let status: Value = reqwest::get(format!("{}/_ts/status", c.url))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(status["state"], "down");
+    assert_eq!(post_chat(&c.url, "gemma2").await.status(), 404);
+}

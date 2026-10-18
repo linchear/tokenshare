@@ -123,3 +123,7 @@ The tray menu has *Settings…*, a small webview window (`wry`) that edits the f
 ## Post-M4: not sharing
 
 `share_with_peers` (default true, a checkbox in Settings). When false the delegate publishes an empty model list in its own entry (so keepalives, joins and syncs tell peers it serves nothing) and rejects forwarded requests (those with the visited header) with 503, which covers peers holding stale info. Local requests and forwarding to others are unchanged. Not a runtime toggle: changing it goes through the settings save, which restarts the delegate.
+
+## Post-M4: client-only delegates
+
+`ollama_hosts` may be empty. Settings accepts a blank field (the share checkbox greys out), `tokenshare --client-only` clears the list, and the tray menu says "(client only)". Behavior needed no routing changes: with no local host the model is never found locally, so every request goes to a peer. Health is down until a peer is online.

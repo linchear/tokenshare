@@ -13,7 +13,7 @@ pub struct Form {
     pub fc: String,
     /// How peers reach this machine; blank to learn it automatically.
     pub advertise_url: String,
-    /// Ollama hosts, one per line.
+    /// Ollama hosts, one per line. May be empty for a client-only delegate.
     pub ollama_hosts: String,
     pub port: String,
     pub pool_size: String,
@@ -73,9 +73,6 @@ pub fn apply(form: &Form, base: &Config) -> Result<Config, Vec<String>> {
         .filter(|l| !l.is_empty())
         .map(normalize_host)
         .collect();
-    if hosts.is_empty() {
-        errors.push("Add at least one ollama host".into());
-    }
     for h in &hosts {
         check_url(&format!("Ollama host {h}"), h, &mut errors);
     }
@@ -164,13 +161,24 @@ mod tests {
     fn every_problem_is_reported() {
         let f = Form {
             fc: "not a url".into(),
-            ollama_hosts: "".into(),
+            ollama_hosts: "not-a url".into(),
             port: "0".into(),
             pool_size: "lots".into(),
             ..form()
         };
         let errors = apply(&f, &Config::default()).unwrap_err();
         assert_eq!(errors.len(), 4, "{errors:?}");
+    }
+
+    #[test]
+    fn no_ollama_hosts_is_allowed_for_client_only_delegates() {
+        let f = Form {
+            ollama_hosts: "  \n\n ".into(),
+            ..form()
+        };
+        let c = apply(&f, &Config::default()).unwrap();
+        assert!(c.ollama_hosts.is_empty());
+        assert!(Form::from_config(&c).ollama_hosts.is_empty());
     }
 
     #[test]
