@@ -232,3 +232,30 @@ async fn a_response_through_a_peer_is_logged_with_its_route_and_the_request_size
     assert!(via_peer.contains(&a.url), "target is the peer: {via_peer}");
     assert!(lines.iter().any(|l| l.contains("route=\"local\"")));
 }
+
+#[tokio::test]
+async fn an_error_event_from_the_upstream_is_logged_with_its_message() {
+    let (log, _g) = capture();
+    let a = node(NodeOpts {
+        models: &["errored:latest"],
+        ..Default::default()
+    })
+    .await;
+    let body = post(&a.url, "/v1/chat/completions", &openai("errored"))
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(body.contains("llama runner process has terminated"));
+
+    let line = log.next_response(0).await;
+    assert!(line.contains("WARN"), "{line}");
+    assert!(line.contains("problem=\"no_final_chunk\""), "{line}");
+    // The reason ollama gave is in the log, so "ended without finish_reason" has a cause.
+    assert!(
+        line.contains("upstream_message=\"llama runner process has terminated: exit status 2\""),
+        "{line}"
+    );
+    // The model's own words are never logged.
+    assert!(!line.contains("hel"), "{line}");
+}

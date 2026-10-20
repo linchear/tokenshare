@@ -127,7 +127,13 @@ pub async fn mock_ollama(models: &[&str], chunk_delay_ms: u64) -> Mock {
                     chunk(json!({"content": "hel"}), Value::Null),
                     chunk(json!({"content": "lo"}), Value::Null),
                 ];
-                if !broken {
+                if req["model"] == "errored" {
+                    // ollama failing after the response began: an error event, then close.
+                    events.push(format!(
+                        "data: {}\n\n",
+                        json!({"error": {"message": "llama runner process has terminated: exit status 2", "type": "api_error"}})
+                    ));
+                } else if !broken {
                     events.push(chunk(json!({}), json!("stop")));
                     events.push(format!(
                         "data: {}\n\n",

@@ -191,6 +191,10 @@ WARN response model="gemma2" route="local" outcome="client_gone" problem="client
   what an OpenAI client reports as "ended without finish_reason", so look at the
   upstream), `client_left_early` (the client gave up before the final chunk: a client
   timeout, for example), `upstream_error` or `cut_off`.
+- `upstream_message` is an error the upstream wrote into the stream itself
+  (`{"error":...}`), which is how ollama reports a failure after the response has
+  begun, for example a crashed runner. It is the usual answer to a
+  `no_final_chunk`.
 - `finish`, `prompt_tokens` and `completion_tokens` are read from the final chunk
   (`-1` when absent). `prompt_tokens` far below what you sent means the upstream
   truncated your prompt. `request_bytes`, `ttfb_ms` and `total_ms` show how big the

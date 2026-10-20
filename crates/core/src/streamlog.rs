@@ -64,6 +64,27 @@ pub struct TailInfo {
     pub finish: Option<String>,
     pub prompt_tokens: Option<u64>,
     pub completion_tokens: Option<u64>,
+    /// An error the upstream reported in the stream itself (`{"error":"..."}` or
+    /// `{"error":{"message":"..."}}`), which ollama does when it fails after the
+    /// response has begun. This is server text, not user content.
+    pub error: Option<String>,
+}
+
+/// The upstream's own error message, if the end of the response carries one.
+fn upstream_error(text: &str) -> Option<String> {
+    let start = text.rfind("\"error\":")? + "\"error\":".len();
+    let rest = text[start..].trim_start();
+    let message = if let Some(body) = rest.strip_prefix('"') {
+        &body[..body.find('"').unwrap_or(body.len())]
+    } else if rest.starts_with('{') {
+        let window = &rest[..rest.len().min(800)];
+        let m = window.find("\"message\":")? + "\"message\":".len();
+        let body = window[m..].trim_start().strip_prefix('"')?;
+        &body[..body.find('"').unwrap_or(body.len())]
+    } else {
+        return None; // `"error":null` and the like
+    };
+    (!message.is_empty()).then(|| message.chars().take(300).collect())
 }
 
 fn last_after(text: &str, key: &str) -> Option<usize> {
@@ -100,6 +121,7 @@ pub fn scan_tail(tail: &[u8], kind: Kind) -> TailInfo {
         finish: string_after(&text, &["\"finish_reason\":", "\"done_reason\":"]),
         prompt_tokens: number_after(&text, &["\"prompt_tokens\":", "\"prompt_eval_count\":"]),
         completion_tokens: number_after(&text, &["\"completion_tokens\":", "\"eval_count\":"]),
+        error: upstream_error(&text),
     }
 }
 
@@ -182,6 +204,7 @@ macro_rules! emit {
             ttfb_ms = $m.ttfb_ms,
             total_ms = $m.started.elapsed().as_millis() as u64,
             finish = $info.finish.as_deref().unwrap_or("-"),
+            upstream_message = $info.error.as_deref().unwrap_or(""),
             prompt_tokens = $info.prompt_tokens.map_or(-1, |n| n as i64),
             completion_tokens = $info.completion_tokens.map_or(-1, |n| n as i64),
             error = $error,
@@ -276,6 +299,33 @@ mod tests {
             Kind::Ndjson,
             &scan_tail(cut.as_bytes(), Kind::Ndjson)
         ));
+    }
+
+    #[test]
+    fn an_error_the_upstream_sent_inside_the_stream_is_captured() {
+        // OpenAI-style error event after the stream began.
+        let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"a\"},\"finish_reason\":null}]}\n\ndata: {\"error\":{\"message\":\"llama runner process has terminated: exit status 2\",\"type\":\"api_error\"}}\n\n";
+        let info = scan_tail(sse.as_bytes(), Kind::Sse);
+        assert_eq!(
+            info.error.as_deref(),
+            Some("llama runner process has terminated: exit status 2")
+        );
+        assert!(!properly_terminated(Kind::Sse, &info));
+        // Ollama's native form.
+        let nd = "{\"message\":{\"content\":\"a\"},\"done\":false}\n{\"error\":\"context length exceeded\"}\n";
+        assert_eq!(
+            scan_tail(nd.as_bytes(), Kind::Ndjson).error.as_deref(),
+            Some("context length exceeded")
+        );
+        // No error: nothing reported, and a null error or escaped quotes in generated text do not count.
+        assert_eq!(scan_tail(OPENAI_END.as_bytes(), Kind::Sse).error, None);
+        assert_eq!(
+            scan_tail(b"{\"error\":null,\"done\":true}", Kind::Ndjson).error,
+            None
+        );
+        let text =
+            "data: {\"choices\":[{\"delta\":{\"content\":\"say \\\"error\\\": nothing\"}}]}\n\n";
+        assert_eq!(scan_tail(text.as_bytes(), Kind::Sse).error, None);
     }
 
     #[test]
