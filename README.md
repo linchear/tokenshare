@@ -171,6 +171,34 @@ returns an empty list. Other endpoints (`pull`, `create`, `delete`, ...) still
 need a local ollama and return 503 without one; a model nobody has is a 404,
 which makes the CLI offer to pull it.
 
+**Response log.** Besides one `request` line per call, every proxied response logs
+one `response` line when it ends (at `info`, or `warn` when something looks wrong),
+so a client's "stream ended without finish_reason" can be traced to its cause:
+
+```
+INFO response model="gemma2" route="local" outcome="complete" problem="" bytes=347 request_bytes=80 ttfb_ms=1 total_ms=206 finish="stop" prompt_tokens=61820 completion_tokens=412
+WARN response model="gemma2" route="local" outcome="complete" problem="no_final_chunk" bytes=176 ...
+WARN response model="gemma2" route="local" outcome="client_gone" problem="client_left_early" ...
+```
+
+- `route`: `local` (this machine's ollama), `peer` (another delegate) or `passthrough`;
+  `target` is the host or peer URL that answered.
+- `outcome`: `complete` (the upstream closed normally), `upstream_error` (reading it
+  failed, with `error`), `cut_off` (this delegate was shut down mid-response), or
+  `client_gone` (the client hung up first).
+- `problem` is empty for a healthy response, else `no_final_chunk` (the upstream
+  ended cleanly but never sent a final `finish_reason` / `[DONE]` / `"done":true`:
+  what an OpenAI client reports as "ended without finish_reason", so look at the
+  upstream), `client_left_early` (the client gave up before the final chunk: a client
+  timeout, for example), `upstream_error` or `cut_off`.
+- `finish`, `prompt_tokens` and `completion_tokens` are read from the final chunk
+  (`-1` when absent). `prompt_tokens` far below what you sent means the upstream
+  truncated your prompt. `request_bytes`, `ttfb_ms` and `total_ms` show how big the
+  request was and how long the first byte and the whole response took.
+
+Only these metrics are logged: the response body is never stored. The delegate
+keeps the last 8 KiB of each response in memory just to find the final chunk.
+
 **Client only.** Ollama hosts are optional. With none (`ollama_hosts = []`, the
 `--client-only` flag, or an empty field in Settings) the delegate serves nothing
 itself and forwards every model request to a delegate that has the model, so

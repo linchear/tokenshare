@@ -147,3 +147,7 @@ Health is four states: green (a model is available, idle), blue (a request in fl
 ## Post-M4: masquerading no longer implies not sharing
 
 Corrects the two-port change: masquerade does not force sharing off (`Config::shares_models` is just `share_with_peers`), because the ollama hosts may be other boxes on the network that the user wants to lend. On the tokenshare port (`Face::Mesh`) a forwarded request (one carrying the visited header) is served from the local hosts when sharing is on, and refused with 503 when it is off; a direct request still gets no local ollama (a delegate with no models) and forwards to peers, as before. `/api/tags` and the passthrough endpoints on that port also stay peers-only. The advertised models follow `share_with_peers`. The share checkbox in Settings is only greyed out when there are no hosts.
+
+## Post-M4: response logging
+
+`streamlog` follows every proxied response and logs one `response` line when it ends (info, or warn when abnormal): outcome (complete, upstream_error, cut_off, client_gone), a `problem` tag (`no_final_chunk`, `client_left_early`, ...), byte counts, time to first byte, total time, and the finish reason and token counts read from the last 8 KiB. The kind of stream (SSE, NDJSON, other) comes from the content type, falling back to the endpoint. No content is logged. Added after an OpenCode user hit "stream ended without finish_reason" on a 62k-token prompt, which could not be reproduced and needed this to diagnose.

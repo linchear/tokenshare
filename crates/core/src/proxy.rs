@@ -21,6 +21,7 @@ use crate::config::{Config, Face};
 use crate::mesh;
 use crate::ollama::{model_matches, peer_model_entry, LocalTable};
 use crate::pool::Pool;
+use crate::streamlog::{Kind, Outcome, StreamMeta, StreamTracker};
 use crate::table::DelegateTable;
 
 /// The ollama version reported on `/api/version` when there is no local ollama to
@@ -266,21 +267,32 @@ impl Outbound<'_> {
 /// ends or the client disconnects (dropping the body drops the upstream
 /// connection too, which makes ollama stop generating). If the delegate is cut
 /// off during shutdown, the stream ends with an error so the client never
-/// mistakes a truncated response for a complete one.
+/// mistakes a truncated response for a complete one. How the response ended is
+/// logged once, when the stream finishes or is dropped (see [`streamlog`]).
 fn stream_response<H: Send + 'static>(
     resp: reqwest::Response,
     held: H,
     cutoff: tokio::sync::watch::Receiver<bool>,
+    mut meta: StreamMeta,
 ) -> Response {
     let status = resp.status();
     let headers = copy_headers(resp.headers());
+    meta.status = status.as_u16();
+    meta.kind = Kind::for_response(
+        resp.headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        &meta.path,
+    );
+    meta.ttfb_ms = meta.started.elapsed().as_millis() as u64;
+    let tracker = StreamTracker::new(meta);
     let inner = resp
         .bytes_stream()
         .map(|r| r.map_err(axum::BoxError::from))
         .boxed();
     let stream = futures_util::stream::unfold(
-        (inner, cutoff, held, false),
-        |(mut inner, cutoff, held, done)| async move {
+        (inner, cutoff, held, false, tracker),
+        |(mut inner, cutoff, held, done, mut tracker)| async move {
             if done {
                 return None;
             }
@@ -293,10 +305,22 @@ fn stream_response<H: Send + 'static>(
             };
             match cut {
                 None => {
+                    tracker.finish(Outcome::CutOff);
                     let err = axum::BoxError::from("delegate shut down mid-response");
-                    Some((Err(err), (inner, cutoff, held, true)))
+                    Some((Err(err), (inner, cutoff, held, true, tracker)))
                 }
-                Some(next) => next.map(|item| (item, (inner, cutoff, held, false))),
+                Some(None) => {
+                    tracker.finish(Outcome::Complete);
+                    None
+                }
+                Some(Some(Ok(chunk))) => {
+                    tracker.feed(&chunk);
+                    Some((Ok(chunk), (inner, cutoff, held, false, tracker)))
+                }
+                Some(Some(Err(e))) => {
+                    tracker.finish(Outcome::UpstreamError(e.to_string()));
+                    Some((Err(e), (inner, cutoff, held, true, tracker)))
+                }
             }
         },
     );
@@ -358,6 +382,19 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
         .map(|p| p.as_str())
         .unwrap_or(&path)
         .to_string();
+    // What the end-of-response log line needs to know about this request.
+    let meta = |route: &'static str, target: &str, model: Option<&str>| StreamMeta {
+        method: parts.method.to_string(),
+        path: path.clone(),
+        model: model.map(str::to_string),
+        route,
+        target: target.to_string(),
+        request_bytes: bytes.len(),
+        started: start,
+        status: 0,
+        kind: Kind::Other,
+        ttfb_ms: 0,
+    };
     let out = Outbound {
         client: &s.client,
         method: &parts.method,
@@ -377,7 +414,12 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
             return error(StatusCode::SERVICE_UNAVAILABLE, "no local ollama available");
         };
         return match out.send(format!("{host}{path_and_query}"), None).await {
-            Ok(resp) => stream_response(resp, (), s.cutoff.subscribe()),
+            Ok(resp) => stream_response(
+                resp,
+                (),
+                s.cutoff.subscribe(),
+                meta("passthrough", &host, None),
+            ),
             Err(e) => {
                 warn!(path, host, error = %e, "ollama request failed");
                 error(StatusCode::BAD_GATEWAY, "ollama request failed")
@@ -435,7 +477,12 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
             return match out.send(format!("{host}{path_and_query}"), None).await {
                 Ok(resp) => {
                     log(host, resp.status().as_u16());
-                    stream_response(resp, permit, s.cutoff.subscribe())
+                    stream_response(
+                        resp,
+                        permit,
+                        s.cutoff.subscribe(),
+                        meta("local", host, Some(&model)),
+                    )
                 }
                 Err(e) => {
                     warn!(path, host, error = %e, "ollama request failed");
@@ -466,7 +513,12 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
             {
                 Ok(resp) if resp.status().is_success() => {
                     log(&peer.url, resp.status().as_u16());
-                    return stream_response(resp, guard.take(), s.cutoff.subscribe());
+                    return stream_response(
+                        resp,
+                        guard.take(),
+                        s.cutoff.subscribe(),
+                        meta("peer", &peer.url, Some(&model)),
+                    );
                 }
                 Ok(resp) => {
                     info!(peer = %peer.url, status = resp.status().as_u16(), "peer declined, trying next")

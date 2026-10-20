@@ -6,6 +6,7 @@ pub mod pool;
 pub mod proxy;
 pub mod settings;
 pub mod status;
+pub mod streamlog;
 pub mod table;
 
 pub use config::Config;

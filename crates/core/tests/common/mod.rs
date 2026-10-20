@@ -111,6 +111,36 @@ pub async fn mock_ollama(models: &[&str], chunk_delay_ms: u64) -> Mock {
                 }))
             }),
         )
+        // OpenAI-style SSE. The model "broken" stops without a final chunk or
+        // [DONE]; every other model ends the way ollama does.
+        .route(
+            "/v1/chat/completions",
+            post(|Json(req): Json<Value>| async move {
+                let broken = req["model"] == "broken";
+                let chunk = |delta: Value, finish: Value| {
+                    format!(
+                        "data: {}\n\n",
+                        json!({"choices": [{"index": 0, "delta": delta, "finish_reason": finish}]})
+                    )
+                };
+                let mut events = vec![
+                    chunk(json!({"content": "hel"}), Value::Null),
+                    chunk(json!({"content": "lo"}), Value::Null),
+                ];
+                if !broken {
+                    events.push(chunk(json!({}), json!("stop")));
+                    events.push(format!(
+                        "data: {}\n\n",
+                        json!({"choices": [], "usage": {"prompt_tokens": 1234, "completion_tokens": 56}})
+                    ));
+                    events.push("data: [DONE]\n\n".to_string());
+                }
+                let body = Body::from_stream(stream::iter(
+                    events.into_iter().map(Ok::<_, std::io::Error>),
+                ));
+                ([("content-type", "text/event-stream")], body)
+            }),
+        )
         .route(
             "/api/ps",
             get(|| async { Json(json!({"models": [{"name": "running-here"}]})) }),
