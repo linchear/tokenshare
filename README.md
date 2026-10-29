@@ -1,326 +1,191 @@
-# Token Share
+<p align="center">
+  <img src="packaging/icon/app-icon.png" alt="Token Share" width="128">
+</p>
 
-Route [ollama](https://ollama.com) calls among several machines. Each machine
-runs a small program, a **delegate**, that listens on one port (default
-`11343`). Point your ollama client at any delegate. It serves the request from
-its own ollama if it can, and otherwise streams it from a peer that has the
-model.
+<h1 align="center">Token Share</h1>
 
-- macOS: menubar app (`Token Share.app`). Windows: taskbar app.
-- Linux: headless daemon, no UI.
-- Machines must be on a trusted network (LAN or a VPN such as Tailscale).
-  There is **no authentication**.
+<p align="center">
+  Pool your <a href="https://ollama.com">ollama</a> machines. Point any ollama client at any
+  one of them, and the request is served locally or streamed from a peer that has the model.
+</p>
 
-## How it works
+---
 
-- **Delegate table.** Every delegate keeps a table of all delegates: id, URL,
-  status, models, `last_seen`. It is persisted to disk.
-- **Joining.** A delegate with `fc = "http://host:11343"` (the *first contact*,
-  an ordinary delegate) introduces itself to it at startup and receives its
-  table. The first contact tells everyone else about the newcomer. On
-  restart a delegate tries the peers in its saved table (random order), then
-  `fc`. It marks unreachable ones `inactive`, and if none answer it retries
-  after `rejoin_retry_secs` (5 minutes).
-- **Keepalives.** Every `keepalive_interval_secs` a delegate sends its entry
-  (models, `last_seen`) to one random peer. The receiver merges it and relays
-  it to one random other peer, up to `keepalive_ttl` hops, dropping duplicates
-  by message ID. A peer that does not answer is marked `unavailable`. It comes
-  back only when a keepalive from it arrives.
-- **Table sync.** Every `sync_interval_secs` a delegate pulls the full table
-  from one random peer and merges it. For each entry the later `last_seen`
-  wins, and a delegate's own entry is never overwritten by others.
-  This repairs missed announcements.
-- **Routing.** For `/api/chat`, `/api/generate`, `/api/embed`,
-  `/api/embeddings` and `/v1/{chat/completions,completions,embeddings}`, the
-  delegate reads `model` from the body, then:
-  1. serves it locally if its ollama has the model and a pool slot is free
-     (`pool_size`, default 3);
-  2. otherwise tries online peers that have the model, in random order, moving
-     on if a peer is full (503), errors, or is unreachable;
-  3. otherwise returns `503` with `Retry-After` (or `404` if nobody has the
-     model).
+You have a GPU box with the big models, a laptop with a couple of small ones, and
+maybe a machine with none at all. Token Share makes them behave like one ollama:
+every machine runs a small peer-to-peer **delegate**, delegates discover each other
+and trade the list of models they hold, and a request to any delegate is routed to
+whichever machine has the model and a free slot.
 
-  A forwarded request carries `X-TokenShare-Visited`; the receiver serves it
-  itself or rejects it and never forwards again, so there are no loops.
-- **Streaming.** The request body is buffered (up to 256 MB) so it can be read
-  and replayed to the next peer. The response is never buffered: ollama's
-  NDJSON is passed through as it arrives, whatever the client's `stream` flag.
-  There is no total timeout. Retrying to another peer happens only before the
-  first response byte; if an upstream dies mid-stream, the client connection is
-  broken so a truncated response is never mistaken for a complete one. If the
-  client disconnects, the upstream request is dropped and ollama stops
-  generating.
-- **Other endpoints.** `GET /api/tags` returns the union of models across the
-  pool. Everything else (`pull`, `show`, ...) goes to this machine's own ollama
-  only.
+- **Drop-in.** It speaks ollama's native and OpenAI-compatible APIs, so the
+  `ollama` CLI (`ls`, `run`, `show`, `ps`) and OpenAI-style clients such as
+  OpenCode work unchanged; with [masquerade](docs/configuration.md#masquerade) it
+  even listens on ollama's own port, 11434.
+- **Streams, doesn't buffer.** Tokens are passed through as they are produced, so
+  first-token latency matches talking to ollama directly. A client disconnect
+  cancels the generation upstream.
+- **No coordinator.** There is no server to run. Delegates gossip membership and
+  keepalives, repair each other's tables, and age out dead peers.
+- **Clients and donors.** A machine with no ollama can just consume the pool
+  (*client-only*); a machine can also use the pool without lending its own ollama
+  (*not sharing*).
+- **Observable.** Every proxied response logs how it ended, so "the stream ended
+  without a finish_reason" can be traced to a cause instead of guessed at.
+- **Native tray apps** for macOS and Windows with status icons and a settings
+  window; a headless daemon (and a `.deb`) for Linux.
+
+```
+   your app / ollama CLI
+            │  ollama or OpenAI API
+            ▼
+   ┌─────────────────┐  model here and a free slot?  ┌──────────────┐
+   │ delegate (you)  │ ────────── yes ─────────────▶ │ local ollama │
+   └────────┬────────┘                               └──────────────┘
+            │ no: stream it from a peer that has the model
+            ├────────────────────────┐
+            ▼                        ▼
+   ┌─────────────────┐      ┌─────────────────┐
+   │ delegate (GPU)  │ ◀──▶ │ delegate (lab)  │   delegates gossip membership,
+   │  └─ ollama      │      │  └─ ollama      │   models and keepalives
+   └─────────────────┘      └─────────────────┘
+```
+
+## Quick start
+
+Build it from a checkout of this repository (you need a recent stable
+[Rust](https://rustup.rs) toolchain):
+
+```bash
+cargo build --release          # target/release/tokenshare (and tokenshare-tray)
+```
+
+On the machine that has the models and ollama running:
+
+```bash
+./target/release/tokenshare
+```
+
+On any other machine on the same network, join through the first one (replace
+`gpu-box` with its address; the port is 11343):
+
+```bash
+./target/release/tokenshare --client-only --fc http://gpu-box:11343
+```
+
+Now use the pool from that second machine:
+
+```bash
+export OLLAMA_HOST=http://localhost:11343
+ollama ls                      # lists the models on every delegate
+ollama run llama3.2 "hello"    # served by whichever delegate has it
+```
+
+To keep apps that already talk to `localhost:11434` working with no changes, add
+`--masquerade` (and run your own ollama on another port, see
+[masquerade](docs/configuration.md#masquerade)). `tokenshare delegates` shows who
+the machine knows about.
+
+## Install
+
+There are no binary releases yet, so build from source. Scripts package the result:
+
+| Platform | Command | Output |
+| --- | --- | --- |
+| macOS | `packaging/macos/build-app.sh` | `Token Share.app`, a menubar-only app |
+| Windows (x64) | `packaging/windows/build-zip.sh` | a zip with the taskbar app, the daemon and `WebView2Loader.dll` |
+| Linux (x64) | `packaging/linux/build-deb.sh` | a `.deb` with the daemon, a systemd user unit and a man page |
+
+Details and prerequisites: [Building and packaging](docs/packaging.md). On Linux
+see also the [Linux guide](docs/linux.md).
 
 ## Configuration
 
-A TOML file; every key is optional. Command-line flags override it.
+Everything is optional and lives in one TOML file; flags override it. The settings
+you will reach for first:
 
-| Key | Default | Meaning |
+| Key | Default | |
 | --- | --- | --- |
-| `port` | `11343` | Port for ollama and coordination traffic |
-| `masquerade` | `false` | Also listen on `ollama_port` for ollama clients; `port` then serves other delegates only (see below) |
-| `ollama_port` | `11434` | The port ollama clients use while masquerading. 11434 is ollama's own, so existing apps need no change. Shown under *Advanced* in Settings |
-| `fc` | none | First-contact delegate URL |
-| `advertise_url` | learned | How peers reach this delegate (learned from the first delegate it joins) |
-| `ollama_hosts` | `["http://localhost:11434"]` | Ollama instances reachable from this machine. Optional: `[]` makes a client-only delegate |
-| `pool_size` | `3` | Max concurrent requests to ollama |
-| `share_with_peers` | `true` | Let other delegates use this machine's ollama (see below). |
-| `poll_interval_secs` | `10` | How often to refresh local models |
-| `rejoin_retry_secs` | `300` | Wait before retrying when no delegate answered |
-| `keepalive_interval_secs` | `30` | Keepalive period |
-| `keepalive_ttl` | `3` | Extra relay hops per keepalive |
-| `sync_interval_secs` | `60` | Full table pull period |
-| `shutdown_grace_secs` | `30` | How long to let in-flight requests finish on shutdown |
-| `peer_expiry_secs` | `86400` | Drop delegates not heard from for this long; `0` keeps them forever (see below) |
+| `fc` | none | a delegate to join through at startup |
+| `ollama_hosts` | `["http://localhost:11434"]` | ollama instances on this machine; `[]` for a client-only delegate |
+| `pool_size` | `3` | concurrent requests sent to the local ollama |
+| `share_with_peers` | `true` | let others use this machine's ollama |
+| `masquerade` | `false` | also listen on ollama's port, 11434 |
+| `port` | `11343` | where delegates (and, without masquerade, clients) connect |
 
-```toml
-fc = "http://192.168.2.3:11343"
-ollama_hosts = ["http://localhost:11434"]
-pool_size = 3
-```
+Full reference, file locations and the tray app's settings window:
+[Configuration](docs/configuration.md).
 
-Default locations (the `directories` crate; the delegate ID and table live in
-the data dir, which is also where the tray app writes `tokenshare.log`):
+## How it works
 
-| | Config file | Data dir |
-| --- | --- | --- |
-| macOS | `~/Library/Application Support/tokenshare/config.toml` | `~/Library/Application Support/tokenshare/` |
-| Linux | `~/.config/tokenshare/config.toml` | `~/.local/share/tokenshare/` |
-| Windows | `%APPDATA%\tokenshare\config\config.toml` | `%APPDATA%\tokenshare\data\` |
+- **Membership.** Each delegate keeps a persisted table of every delegate: URL,
+  status, models, `last_seen`. A newcomer asks any delegate for its table, and the
+  rest hear about it by announcement. There is no leader.
+- **Keepalives and sync.** Every delegate sends a keepalive carrying its models to a
+  random peer, which relays it a few hops. Peers that stop answering are marked
+  unavailable and return only on a fresh keepalive. Periodic full-table pulls repair
+  anything gossip missed, with the later `last_seen` winning.
+- **Routing.** The delegate reads `model` from the request, serves it from its own
+  ollama if it has the model and a free slot, and otherwise tries online peers that
+  have it in random order. Forwarded requests carry a header so they are never
+  forwarded twice.
+- **Streaming and failure.** The request body is buffered so it can be replayed to
+  the next peer, but responses never are. A request is retried on another peer only
+  before the first byte; once streaming has started, an upstream failure breaks the
+  client connection so a truncated reply is never mistaken for a complete one.
 
-## Running
+More: [How it works](docs/how-it-works.md) (protocol, streaming, stale delegates,
+shutdown) and [Ollama compatibility](docs/ollama-compatibility.md) (exactly which
+endpoints are routed, and what the `ollama` CLI needs from a server).
 
-Headless daemon (all platforms, the only option on Linux):
+## Observability
 
-```bash
-cargo run --release -p tokenshare -- --fc http://192.168.2.3:11343
-```
-
-Flags: `--config`, `--port`, `--fc`, `--advertise-url`, `--ollama-host`
-(repeatable), `--client-only`, `--masquerade`, `--pool-size`. Set `RUST_LOG` to change the log level. Logs list
-metrics only (method, path, model, target, status, time to first byte), never
-request content. On Linux, `packaging/linux/tokenshare.service` is a systemd
-user unit.
-
-macOS menubar app:
-
-```bash
-packaging/macos/build-app.sh   # builds target/release/bundle/Token Share.app
-```
-
-The tray apps run the delegate themselves; do not also run the daemon on the
-same port. The icon is a round badge with a symbol, so state does not depend on color
-alone: a green **check** (✅) when a model is available and the delegate is idle, a
-blue **lightning bolt** (⚡) while any request is in flight (served here or
-forwarded), a yellow **exclamation mark** (⚠️) when no model is available anywhere
-but other delegates are online (it turns green by itself when some ollama comes
-back), and a gray **unplugged** icon (🔌) when no model is available and no other delegate
-is online, or the delegate failed to start (the menu says "Unavailable"). "Available" means a model listed by
-this machine's ollama or by an online peer; a reachable ollama with nothing
-installed does not count. The menu
-shows state, pool usage and the delegate list. Quit waits up to 5 seconds for
-in-flight requests.
-
-**Masquerade.** With `masquerade = true` (the *Also listen on ollama's port*
-checkbox, or `--masquerade`) the delegate listens on **two** ports:
-
-- **`ollama_port`** (11434 by default, ollama's own; `--ollama-port`, or *Ollama port*
-  under *Advanced* in Settings), with the full behavior: apps already pointed
-  at ollama use the local ollama and the pool with no changes.
-- **`port`** (11343 by default), the tokenshare port, which is how other
-  delegates reach it. Requests that other delegates forward to it are served
-  from your ollama hosts (when *Share my ollama with other delegates* is on, the
-  default), so a masquerading machine, and any other ollama boxes on your
-  network that you list as hosts, can still lend their models to the pool.
-  Apps that connect to this port directly are not served from your hosts: it
-  acts as a delegate with **no models** for them, forwarding to other delegates
-  like a client-only delegate. Your own apps use the ollama port.
-
-Turn sharing off to keep the hosts private: the machine still joins and
-gossips, but advertises no models and refuses forwarded requests. In both
-cases the delegate advertises itself on the tokenshare port even if another
-delegate joined it through the ollama port.
-
-11434 is also the port a local ollama uses, so you cannot run both on it. Either
-start ollama on another port (for example `OLLAMA_HOST=127.0.0.1:11435`) and
-list that address as the ollama host, or leave ollama alone and set a different
-`ollama_port` for the delegate (apps then need that port instead of 11434). The delegate refuses to start if an ollama host
-points back at itself (on either of its ports). If a port is already taken,
-Settings warns before saving (you can *Save Anyway*), and starting fails with
-"port 11434 is already in use" (naming whichever port it is). The check also catches ollama listening on
-127.0.0.1 only, which on macOS would otherwise quietly shadow the delegate for
-local clients. The menu shows "(masquerading)".
-
-**What ollama clients see.** On either port the delegate answers `GET`/`HEAD /`
-("Ollama is running") itself, and `/api/version` too: on the mesh port always, on
-the ollama port when there is no local ollama (a fixed `0.12.0`; with one, its own
-answer is passed through). Clients check these first, and the `ollama` CLI launches Ollama.app if they
-fail. `/api/tags` (what `ollama ls` calls) lists this machine's models as ollama
-reports them, plus peers' models with the fields filled in as far as we know them:
-the digest is a stand-in hash of the name, the size is 0 and the time is when the
-peer was last heard from. `ollama ls` needs a digest on every entry and crashes
-without one.
-
-`ollama run` and `ollama show` start with `POST /api/show`, which is routed by
-model like a chat request (to this machine's ollama if it has the model, else to
-a peer that does), but does not use a pool slot. `ollama ps` with no local ollama
-returns an empty list. Other endpoints (`pull`, `create`, `delete`, ...) still
-need a local ollama and return 503 without one; a model nobody has is a 404,
-which makes the CLI offer to pull it.
-
-**Response log.** Besides one `request` line per call, every proxied response logs
-one `response` line when it ends (at `info`, or `warn` when something looks wrong),
-so a client's "stream ended without finish_reason" can be traced to its cause:
+Every proxied response logs one line when it ends, including how it ended, how long
+it took, and the token counts from the final chunk, never any content. For example,
+a response whose upstream stopped without a final chunk:
 
 ```
-INFO response model="gemma2" route="local" outcome="complete" problem="" bytes=347 request_bytes=80 ttfb_ms=1 total_ms=206 finish="stop" prompt_tokens=61820 completion_tokens=412
-WARN response model="gemma2" route="local" outcome="complete" problem="no_final_chunk" bytes=176 ...
-WARN response model="gemma2" route="local" outcome="client_gone" problem="client_left_early" ...
+WARN response model="qwen3:14b" route="peer" outcome="complete" problem="no_final_chunk" bytes=176 ttfb_ms=7120 total_ms=7144 upstream_message="llama runner process has terminated"
 ```
 
-- `route`: `local` (this machine's ollama), `peer` (another delegate) or `passthrough`;
-  `target` is the host or peer URL that answered.
-- `outcome`: `complete` (the upstream closed normally), `upstream_error` (reading it
-  failed, with `error`), `cut_off` (this delegate was shut down mid-response), or
-  `client_gone` (the client hung up first).
-- `problem` is empty for a healthy response, else `no_final_chunk` (the upstream
-  ended cleanly but never sent a final `finish_reason` / `[DONE]` / `"done":true`:
-  what an OpenAI client reports as "ended without finish_reason", so look at the
-  upstream), `client_left_early` (the client gave up before the final chunk: a client
-  timeout, for example), `upstream_error` or `cut_off`.
-- `upstream_message` is an error the upstream wrote into the stream itself
-  (`{"error":...}`), which is how ollama reports a failure after the response has
-  begun, for example a crashed runner. It is the usual answer to a
-  `no_final_chunk`.
-- `finish`, `prompt_tokens` and `completion_tokens` are read from the final chunk
-  (`-1` when absent). `prompt_tokens` far below what you sent means the upstream
-  truncated your prompt. `request_bytes`, `ttfb_ms` and `total_ms` show how big the
-  request was and how long the first byte and the whole response took.
+`GET /_ts/status` returns the delegate's state and table as JSON. See
+[Logging](docs/logging.md).
 
-Only these metrics are logged: the response body is never stored. The delegate
-keeps the last 8 KiB of each response in memory just to find the final chunk.
+## Limitations and security
 
-**Client only.** Ollama hosts are optional. With none (`ollama_hosts = []`, the
-`--client-only` flag, or an empty field in Settings) the delegate serves nothing
-itself and forwards every model request to a delegate that has the model, so
-machines without a GPU can just consume the pool. `/api/tags` still lists the
-pool's models; endpoints that only make sense locally (`pull`, `show`, ...)
-return 503. It reads as **down** until it has at least one online peer, and the
-menu shows "(client only)".
+- **There is no authentication and no encryption.** Run it only on a network you
+  trust (a LAN, or a VPN such as Tailscale) and never expose the port to the
+  internet. Anyone who can reach a delegate can use every model in the pool and
+  join the mesh.
+- **Full mesh.** Every delegate knows every other, so this is for a handful to a
+  few dozen machines, not thousands.
+- **Load balancing is random**, not load-aware; there is no GPU/CPU awareness.
+- **Clocks matter a little.** Table merges compare `last_seen` timestamps from
+  different machines, so keep them roughly in sync with NTP.
+- **Not every endpoint is pooled.** `pull`, `create`, `delete` and friends only act
+  on a machine's own ollama.
+- **Peer models in `ollama ls` show size `0 B`** and a stand-in ID, because only
+  names are shared between delegates.
 
-**Not sharing.** With `share_with_peers = false` (the *Share my ollama with other
-delegates* checkbox in Settings) this delegate looks like its ollama is down to
-everyone else: it advertises no models, so peers do not choose it, and it refuses
-any forwarded request with 503 in case a peer's view is stale. Its own users are
-unaffected: requests to it are still served by its local ollama and, failing
-that, by other delegates. The menu shows "(not sharing)" and `/_ts/status`
-reports `"sharing": false`.
+## Status
 
-**Settings.** Choose *Settings…* in the tray menu to edit the first contact,
-ollama hosts (one per line), whether to share your ollama, connections to ollama, listen port and, under
-Advanced, the advertise URL. *Save & Restart* validates the values, writes the
-config file and restarts the delegate with them; requests in flight get a few
-seconds to finish. Other options (intervals, TTL, grace period) are kept as they
-are in the file, so edit it directly for those. On macOS the app shows a Dock icon
-while the window is open. The window needs WebView2 on Windows (included in
-Windows 11 and current Windows 10).
-
-`GET /_ts/status` returns the same picture as JSON: `state`, `draining`,
-`pool`, local ollama hosts and the delegate table.
-
-## App icon
-
-A blue squircle with a mesh of three linked nodes and a gold token in the middle;
-more tokens travel along the links. It is drawn in code
-(`crates/tray/examples/app_icon.rs`), and the generated assets are committed:
-`packaging/macos/AppIcon.icns` (bundled by `build-app.sh`) and
-`crates/tray/icon.ico` (embedded in `tokenshare-tray.exe` by `crates/tray/build.rs`).
-After changing the artwork, run `packaging/icon/generate.sh` on a Mac. This is
-separate from the small status icons in the menubar/taskbar.
-
-## Stale delegates
-
-- **Our own address.** A delegate never reuses its own address from the saved
-  table. It uses `advertise_url` if set, otherwise it learns it again from the
-  delegate it joins. A wrong address would otherwise be handed to every peer and
-  stay wrong across restarts.
-- **Expiry.** A live delegate refreshes its `last_seen` with every keepalive, so
-  one not heard from for `peer_expiry_secs` (a day by default) is dead. Each
-  delegate drops such entries after a successful table sync and also refuses to
-  take them back from others' gossip, so a dead delegate ages out of the whole
-  mesh instead of circulating forever. A delegate that was only offline for a
-  while returns by rejoining.
-- **Forget.** In the tray menu, under *Delegates*, each delegate has *Forget this
-  delegate*; headless machines use `tokenshare delegates` to list them and
-  `tokenshare forget <id|id-prefix|url>` to forget one (these ask the delegate
-  running on this machine, on `--port` or the configured port, and it refuses
-  them from anywhere else). It is removed and kept out (the choice is saved in
-  `forgotten.json`) until it is heard from again with a newer `last_seen`, so
-  forgetting a dead one sticks while forgetting one that is alive only lasts
-  until its next keepalive.
-
-## Shutdown
-
-On SIGINT/SIGTERM (or Quit in the tray) a delegate stops gossiping, refuses new
-model requests with 503 (peers treat that as "try the next one"), and waits up
-to `shutdown_grace_secs` for requests in flight, local or forwarded, to finish.
-Anything still streaming after that is cut off with a broken stream.
-
-## Limits and caveats
-
-- **Full mesh.** Every delegate learns about every other, and a join is
-  announced to all of them. This does not scale to large pools; plan for tens
-  of delegates, not thousands. Partial gossip views would be the next step.
-- **Clocks.** "Later `last_seen` wins" compares timestamps from different
-  machines, so keep clocks roughly in sync (NTP).
-- **No auth, no encryption.** Run it only on a trusted network.
-- **Load balancing is random**, not load-aware. CPU/GPU/RAM metrics are not
-  collected yet.
-- **`last_seen` is not "seen by me".** A relayed keepalive refreshes an entry
-  with the origin's timestamp, so an entry can be marked online on the word of a
-  third party until a direct request fails.
-
-## Differences from `design/design.md`
-
-- "All full" returns **503** with `Retry-After`, not 500.
-- The delegate ID is a persisted random UUID, not a hash of the MAC address.
-- The tray apps embed the delegate instead of talking to a separate daemon.
+This is early software, version 0.1. It was built and exercised mainly on **macOS
+(Apple Silicon)**. The Windows and Linux builds are cross-compiled and a CI workflow
+for all three platforms is included, but they have had far less hands-on use. Bug
+reports with the `response` log lines around the problem are the most useful kind.
 
 ## Development
 
 ```bash
-cargo test            # unit tests plus multi-node integration tests
+cargo test                                  # unit tests plus multi-node integration tests
 cargo clippy --all-targets -- -D warnings
+cargo fmt --all --check
 ```
 
-Layout: `crates/core` (library: proxy, delegate table, mesh protocol, daemon
-startup, health), `crates/tokenshare` (headless daemon), `crates/tray`
-(menubar/taskbar app; a stub on Linux). Design notes are in `design/`;
-`design/plan.md` records the decisions and what was built.
+The integration tests start several delegates and mock ollamas in-process, including
+killing and restarting nodes. Layout, the original design sketch and the decision
+log are in [Building and packaging](docs/packaging.md#repository-layout) and
+[`design/`](design/).
 
-## Packaging
+## License
 
-Both scripts cross-compile from macOS (or Linux) and need the toolchains noted
-at the top of each.
-
-```bash
-packaging/windows/build-zip.sh   # target/x86_64-pc-windows-gnu/tokenshare-windows-x64.zip
-packaging/linux/build-deb.sh     # target/deb/tokenshare_<version>_amd64.deb
-```
-
-- **Windows** (`brew install mingw-w64`): the zip holds `tokenshare-tray.exe`,
-  `tokenshare.exe` and `WebView2Loader.dll`, which must stay next to the tray
-  exe. Unzip anywhere and run the tray exe.
-- **Linux** (`brew install zig dpkg`, `cargo install cargo-zigbuild`): the
-  `.deb` installs `/usr/bin/tokenshare`, its man page (`man tokenshare`), a
-  systemd *user* unit, and an example config under `/usr/share/doc/tokenshare/`. It is built against glibc 2.17 and
-  needs only libc. After `sudo apt install ./tokenshare_*_amd64.deb`, run
-  `systemctl --user enable --now tokenshare`; configuration is read from
-  `~/.config/tokenshare/config.toml`. To keep it running without a login
-  session, `loginctl enable-linger $USER`. Full guide: [docs/linux.md](docs/linux.md).
-
-The cross-built binaries have not been run on Windows or Linux by the author of
-this note; CI builds natively on both.
+[MIT](LICENSE).
