@@ -34,21 +34,26 @@ whichever machine has the model and a free slot.
 - **Native tray apps** for macOS and Windows with status icons and a settings
   window; a headless daemon (and a `.deb`) for Linux.
 
+```mermaid
+flowchart LR
+    app(["Your app or<br/>ollama CLI"])
+    d1["<b>Your delegate</b>"]
+    o1[("Your<br/>ollama")]
+
+    subgraph peers ["Peers"]
+        d2["<b>Delegate</b><br/>+ its ollama"]
+        d3["<b>Delegate</b><br/>+ its ollama"]
+    end
+
+    app -- "ollama or<br/>OpenAI API" --> d1
+    d1 -- "has the model<br/>and a free slot" --> o1
+    d1 -- "otherwise: stream it from<br/>a peer that has the model" --> d2
+    d1 --> d3
 ```
-   your app / ollama CLI
-            │  ollama or OpenAI API
-            ▼
-   ┌─────────────────┐  model here and a free slot?  ┌──────────────┐
-   │ delegate (you)  │ ────────── yes ─────────────▶ │ local ollama │
-   └────────┬────────┘                               └──────────────┘
-            │ no: stream it from a peer that has the model
-            ├────────────────────────┐
-            ▼                        ▼
-   ┌─────────────────┐      ┌─────────────────┐
-   │ delegate (GPU)  │ ◀──▶ │ delegate (lab)  │   delegates gossip membership,
-   │  └─ ollama      │      │  └─ ollama      │   models and keepalives
-   └─────────────────┘      └─────────────────┘
-```
+
+Every machine runs a delegate. Delegates gossip membership, models and keepalives with
+each other (there is no coordinator), and a request goes to whichever delegate has the
+model and a free slot.
 
 ## Quick start
 
