@@ -57,10 +57,11 @@ model and a free slot.
 
 ## Quick start
 
-Build it from a checkout of this repository (you need a recent stable
-[Rust](https://rustup.rs) toolchain):
+Clone and build it (you need a recent stable [Rust](https://rustup.rs) toolchain):
 
 ```bash
+git clone https://github.com/linchear/tokenshare.git
+cd tokenshare
 cargo build --release          # target/release/tokenshare (and tokenshare-tray)
 ```
 
