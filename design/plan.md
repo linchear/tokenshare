@@ -37,7 +37,7 @@ macOS, Windows, and Linux are all first-class targets. The tray UI is macOS and 
 
 ## Phases
 
-### M1: Single-node proxy (done, commit fdd14f2)
+### M1: Single-node proxy (done, commit 5f6990b)
 **Phase 0, Scaffold**
 - Cargo workspace, CI (fmt, clippy, test on macOS, Windows, Linux).
 - Config via file, env, and CLI flags: `port` (11343), `fc`, `ollama_hosts`, `pool_size` (3), `keepalive_interval`, `sync_interval`.
