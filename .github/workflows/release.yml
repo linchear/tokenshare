@@ -1,0 +1,88 @@
+name: release
+# Push a tag like v0.1.0 to build the packages and publish a GitHub release.
+# Run it by hand ("Run workflow") to build the packages without publishing.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-latest # Apple Silicon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: packaging/macos/build-app.sh
+      # Ad-hoc signature only (no Apple developer account): Gatekeeper still
+      # asks for a right-click > Open the first time.
+      - run: codesign --force --deep --sign - "target/release/bundle/Token Share.app"
+      - run: ditto -c -k --keepParent "Token Share.app" "$GITHUB_WORKSPACE/tokenshare-macos-arm64.zip"
+        working-directory: target/release/bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: tokenshare-macos-arm64.zip
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p tokenshare-tray -p tokenshare
+      - name: Zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item target/release/tokenshare-tray.exe, target/release/tokenshare.exe dist/
+          # The MSVC build links the WebView2 loader statically; ship the DLL
+          # only if the build produced one.
+          Get-ChildItem target/release/build -Recurse -Filter WebView2Loader.dll |
+            Select-Object -First 1 | ForEach-Object { Copy-Item $_.FullName dist/ }
+          Compress-Archive -Path dist/* -DestinationPath tokenshare-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: tokenshare-windows-x64.zip
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # build-deb.sh cross-compiles against glibc 2.17 with zig so the .deb
+      # runs on older distributions than this runner.
+      - run: |
+          git config user.name "Lin Chear"
+          git config user.email "lin@chear.ca"
+      - run: pip install ziglang
+      - run: cargo install cargo-zigbuild --locked
+      - run: packaging/linux/build-deb.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: target/deb/*.deb
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos, windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Token Share ${GITHUB_REF_NAME#v}" \
+            --generate-notes
