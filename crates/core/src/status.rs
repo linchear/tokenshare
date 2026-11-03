@@ -42,6 +42,7 @@ pub fn health(s: &AppState) -> Health {
 }
 
 pub fn status_json(s: &AppState) -> Value {
+    s.publish_load();
     let hosts: Vec<Value> = s
         .table
         .snapshot()
@@ -51,6 +52,7 @@ pub fn status_json(s: &AppState) -> Value {
                 "host": h.host,
                 "up": h.up,
                 "models": h.models.iter().map(|m| &m.name).collect::<Vec<_>>(),
+                "loaded": h.loaded,
             })
         })
         .collect();
@@ -64,6 +66,8 @@ pub fn status_json(s: &AppState) -> Value {
         "ports": s.config.listen_ports(),
         "pool": { "size": s.pool.size(), "in_use": s.pool.in_use(), "forwarding": s.pool.forwarding() },
         "ollama": hosts,
+        "version": env!("CARGO_PKG_VERSION"),
         "delegates": s.delegates.shared_entries(),
+        "activity": s.activity.snapshot(),
     })
 }

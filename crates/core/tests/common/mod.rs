@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::body::Body;
@@ -32,6 +32,20 @@ pub struct Mock {
     pub url: String,
     /// True once a `/api/chat` response stream has been dropped mid-way.
     pub chat_dropped: Arc<AtomicBool>,
+    /// How many `/api/chat` requests this ollama has received.
+    pub chats: Arc<AtomicUsize>,
+    /// What `/api/ps` reports as loaded in memory; tests may change it.
+    pub loaded: Arc<Mutex<Vec<String>>>,
+}
+
+impl Mock {
+    pub fn chat_count(&self) -> usize {
+        self.chats.load(Ordering::SeqCst)
+    }
+
+    pub fn set_loaded(&self, models: &[&str]) {
+        *self.loaded.lock().unwrap() = models.iter().map(|m| m.to_string()).collect();
+    }
 }
 
 /// A fake ollama serving `models`. `/api/chat` streams 3 NDJSON lines
@@ -43,6 +57,10 @@ pub async fn mock_ollama(models: &[&str], chunk_delay_ms: u64) -> Mock {
         .collect();
     let dropped = Arc::new(AtomicBool::new(false));
     let dropped2 = dropped.clone();
+    let chats = Arc::new(AtomicUsize::new(0));
+    let chats2 = chats.clone();
+    let loaded = Arc::new(Mutex::new(vec!["running-here".to_string()]));
+    let loaded2 = loaded.clone();
     let app = Router::new()
         .route(
             "/api/tags",
@@ -55,6 +73,7 @@ pub async fn mock_ollama(models: &[&str], chunk_delay_ms: u64) -> Mock {
             "/api/chat",
             post(move |Json(req): Json<Value>| {
                 let dropped = dropped2.clone();
+                chats2.fetch_add(1, Ordering::SeqCst);
                 async move {
                     let model = req["model"].as_str().unwrap().to_string();
                     let state = (0, DropFlag(dropped));
@@ -149,11 +168,17 @@ pub async fn mock_ollama(models: &[&str], chunk_delay_ms: u64) -> Mock {
         )
         .route(
             "/api/ps",
-            get(|| async { Json(json!({"models": [{"name": "running-here"}]})) }),
+            get(move || {
+                let names = loaded2.lock().unwrap().clone();
+                let models: Vec<Value> = names.iter().map(|n| json!({"name": n})).collect();
+                async move { Json(json!({ "models": models })) }
+            }),
         );
     Mock {
         url: serve_plain(app).await,
         chat_dropped: dropped,
+        chats,
+        loaded,
     }
 }
 

@@ -1,9 +1,11 @@
+pub mod activity;
 pub mod config;
 pub mod daemon;
 pub mod mesh;
 pub mod ollama;
 pub mod pool;
 pub mod proxy;
+pub mod routing;
 pub mod settings;
 pub mod status;
 pub mod streamlog;

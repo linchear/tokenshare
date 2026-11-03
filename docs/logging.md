@@ -48,5 +48,18 @@ chunk; the body is never stored.
 ## Status
 
 `GET /_ts/status` returns JSON: `state`, `draining`, `sharing`, `masquerade`,
-`pool` usage, local ollama hosts and the delegate table. `tokenshare delegates`
-prints the delegates this machine knows about.
+`pool` usage, local ollama hosts (with the models each has loaded), the delegate
+table (with each delegate's published load), and `activity`: per upstream (local
+ollama host or peer URL) the requests in flight, completed and problem responses,
+refusals and the average time to first byte, the count of requests turned away
+(busy or unknown model), and the last 100 responses. Like the log, these are
+metrics only, never content. `tokenshare delegates` prints the delegates this
+machine knows about.
+
+## Dashboard
+
+`http://<delegate>:11343/_ts/dashboard` is a page that polls `/_ts/status` every
+two seconds and shows the delegates with their slots and warm models, the local
+ollama hosts, and recent responses with how they ended. The tray app opens it from
+**Open Dashboard**. It needs no internet access, and it shows only what
+`/_ts/status` already does to anyone who can reach the port.

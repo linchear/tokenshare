@@ -132,8 +132,9 @@ Full reference, file locations and the tray app's settings window:
   anything gossip missed, with the later `last_seen` winning.
 - **Routing.** The delegate reads `model` from the request, serves it from its own
   ollama if it has the model and a free slot, and otherwise tries online peers that
-  have it in random order. Forwarded requests carry a header so they are never
-  forwarded twice.
+  have it, best first: peers that have not just refused, have free slots and have
+  the model already loaded in memory go ahead of the rest. Forwarded requests carry
+  a header so they are never forwarded twice.
 - **Streaming and failure.** The request body is buffered so it can be replayed to
   the next peer, but responses never are. A request is retried on another peer only
   before the first byte; once streaming has started, an upstream failure breaks the
@@ -153,8 +154,9 @@ a response whose upstream stopped without a final chunk:
 WARN response model="qwen3:14b" route="peer" outcome="complete" problem="no_final_chunk" bytes=176 ttfb_ms=7120 total_ms=7144 upstream_message="llama runner process has terminated"
 ```
 
-`GET /_ts/status` returns the delegate's state and table as JSON. See
-[Logging](docs/logging.md).
+`GET /_ts/status` returns the delegate's state, table and recent activity as JSON,
+and `/_ts/dashboard` shows the same as a live page (the tray app's **Open
+Dashboard**). See [Logging](docs/logging.md).
 
 ## Limitations and security
 
@@ -164,7 +166,9 @@ WARN response model="qwen3:14b" route="peer" outcome="complete" problem="no_fina
   join the mesh.
 - **Full mesh.** Every delegate knows every other, so this is for a handful to a
   few dozen machines, not thousands.
-- **Load balancing is random**, not load-aware; there is no GPU/CPU awareness.
+- **Load balancing is approximate.** Peers publish busy slots and warm models with
+  their keepalives, so routing works from a view that can be seconds old; there is
+  no GPU/CPU awareness.
 - **Clocks matter a little.** Table merges compare `last_seen` timestamps from
   different machines, so keep them roughly in sync with NTP.
 - **Not every endpoint is pooled.** `pull`, `create`, `delete` and friends only act

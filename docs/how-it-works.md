@@ -4,8 +4,8 @@ This is the long version of the [README](../README.md#how-it-works).
 
 ## The delegate table
 
-Every delegate keeps a table of all delegates: id, URL, status, models and
-`last_seen`. It is persisted to disk, so a restarted delegate remembers its peers.
+Every delegate keeps a table of all delegates: id, URL, status, models, load
+(slots, busy slots, models loaded in memory) and `last_seen`. It is persisted to disk, so a restarted delegate remembers its peers.
 There is no coordinator. The *first contact* (`fc`) is just an ordinary delegate
 that a newcomer happens to ask first.
 
@@ -15,7 +15,7 @@ that a newcomer happens to ask first.
   (random order), then `fc`. It marks unreachable ones `inactive`, and if none
   answer it retries after `rejoin_retry_secs` (5 minutes).
 - **Keepalives.** Every `keepalive_interval_secs` a delegate sends its entry
-  (models, `last_seen`) to one random peer. The receiver merges it and relays it
+  (models, load, `last_seen`) to one random peer. The receiver merges it and relays it
   to one random other peer, up to `keepalive_ttl` hops, dropping duplicates by
   message ID. A peer that does not answer is marked `unavailable`; it comes back
   only when a keepalive from it arrives.
@@ -31,10 +31,32 @@ For `/api/chat`, `/api/generate`, `/api/embed`, `/api/embeddings` and
 the request body, then:
 
 1. serves it locally if its ollama has the model and a pool slot is free
-   (`pool_size`, default 3);
-2. otherwise tries online peers that have the model, in random order, moving on if
-   a peer is full (503), errors, or is unreachable;
+   (`pool_size`, default 3). With several local ollama hosts, one that already has
+   the model loaded is preferred;
+2. otherwise tries online peers that have the model, best first (see below), moving
+   on if a peer is full (503), errors, or is unreachable;
 3. otherwise returns `503` with `Retry-After` (or `404` if nobody has the model).
+
+### Choosing a peer
+
+Every delegate that shares its ollama publishes its load in its own entry: `slots`
+(its `pool_size`), `busy` (slots in use) and `loaded` (models in memory, from
+ollama's `/api/ps`, refreshed every `poll_interval_secs`). These travel with
+keepalives and table pulls, so they can be a keepalive interval old. The sending
+delegate adds what it knows first-hand: how many of its own requests are in flight
+to each peer, and which peers refused a request or could not be reached in the last
+10 seconds. Peers are ordered by, in turn:
+
+1. not *cooling down* after such a refusal;
+2. not full: published `busy` plus our own in-flight requests below `slots` (a
+   delegate too old to publish `slots` counts as not full);
+3. *warm*: the model is already loaded, so it starts without a load;
+4. fewest of our own requests in flight.
+
+Ties are broken at random, so equally good peers share the work. No peer is ever
+skipped: a full or cooling one is still tried, after the others. Local-first is
+unchanged: a delegate with the model and a free slot serves it itself, even if a
+peer has it warm.
 
 A forwarded request carries `X-TokenShare-Visited`; the receiver serves it itself
 or rejects it and never forwards again, so there are no loops.
@@ -96,8 +118,10 @@ Anything still streaming after that is cut off with a broken stream.
 - **`last_seen` is not "seen by me".** A relayed keepalive refreshes an entry with
   the origin's timestamp, so an entry can be marked online on the word of a third
   party until a direct request fails.
-- **Load balancing is random**, not load-aware. CPU/GPU/RAM metrics are not
-  collected.
+- **Load information is approximate.** Peers' busy slots and warm models are as of
+  their last keepalive, corrected only by this delegate's own traffic, so two
+  delegates can still pick the same peer at the same moment. CPU/GPU/RAM metrics
+  are not collected.
 
 ## Differences from the original design
 
