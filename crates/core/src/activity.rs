@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use crate::metrics::Exposition;
 use crate::table::now_ms;
 
 /// How many finished responses to keep for the dashboard.
@@ -75,12 +76,86 @@ pub struct Finished {
     pub completion_tokens: Option<u64>,
 }
 
+/// Upper bounds, in seconds, of the latency histogram buckets. Generations can
+/// run for minutes, so the top buckets are wide.
+pub const BUCKETS: [f64; 13] = [
+    0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0,
+];
+
+/// A Prometheus-style histogram: per-bucket counts (not cumulative), sum, count.
+#[derive(Debug, Default, Clone)]
+pub struct Histogram {
+    buckets: [u64; BUCKETS.len()],
+    sum: f64,
+    count: u64,
+}
+
+impl Histogram {
+    pub fn observe(&mut self, secs: f64) {
+        if let Some(i) = BUCKETS.iter().position(|&b| secs <= b) {
+            self.buckets[i] += 1;
+        }
+        self.sum += secs;
+        self.count += 1;
+    }
+
+    /// `(le, cumulative count)` for each bucket, then `+Inf`.
+    pub fn cumulative(&self) -> Vec<(String, u64)> {
+        let mut acc = 0;
+        let mut out: Vec<(String, u64)> = BUCKETS
+            .iter()
+            .zip(self.buckets)
+            .map(|(b, n)| {
+                acc += n;
+                (b.to_string(), acc)
+            })
+            .collect();
+        out.push(("+Inf".into(), self.count));
+        out
+    }
+
+    pub fn sum(&self) -> f64 {
+        self.sum
+    }
+
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+}
+
+/// How a finished response is counted in metrics: `ok`, an HTTP error status
+/// from the upstream, or the stream problem (`no_final_chunk`, `upstream_error`,
+/// `cut_off`, `client_left_early`).
+fn result_of(f: &Finished) -> &'static str {
+    if !f.problem.is_empty() {
+        f.problem
+    } else if f.status >= 400 {
+        "error_status"
+    } else {
+        "ok"
+    }
+}
+
+/// A map's entries sorted by key, so metrics come out in a stable order.
+fn sorted<K: Ord, V>(m: &HashMap<K, V>) -> Vec<(&K, &V)> {
+    let mut v: Vec<_> = m.iter().collect();
+    v.sort_by(|a, b| a.0.cmp(b.0));
+    v
+}
+
 #[derive(Default)]
 struct Inner {
     targets: HashMap<String, TargetStats>,
     recent: VecDeque<Finished>,
     busy: u64,
     not_found: u64,
+    /// Since start, for metrics. Keyed by (route, target, result).
+    results: HashMap<(&'static str, String, &'static str), u64>,
+    /// Keyed by (route, target).
+    ttfb: HashMap<(&'static str, String), Histogram>,
+    duration: HashMap<(&'static str, String), Histogram>,
+    /// Keyed by (model, "prompt" | "completion").
+    tokens: HashMap<(String, &'static str), u64>,
 }
 
 #[derive(Default)]
@@ -155,6 +230,28 @@ impl Activity {
     /// (pulls and the like) is listed but does not count toward target stats.
     pub fn finished(&self, f: Finished) {
         let mut g = self.inner.lock().unwrap();
+        let key = (f.route, f.target.clone());
+        *g.results
+            .entry((f.route, f.target.clone(), result_of(&f)))
+            .or_default() += 1;
+        g.ttfb
+            .entry(key.clone())
+            .or_default()
+            .observe(f.ttfb_ms as f64 / 1000.0);
+        g.duration
+            .entry(key)
+            .or_default()
+            .observe(f.total_ms as f64 / 1000.0);
+        if let Some(model) = &f.model {
+            for (kind, n) in [
+                ("prompt", f.prompt_tokens),
+                ("completion", f.completion_tokens),
+            ] {
+                if let Some(n) = n {
+                    *g.tokens.entry((model.clone(), kind)).or_default() += n;
+                }
+            }
+        }
         if f.route != "passthrough" {
             let t = g.targets.entry(f.target.clone()).or_default();
             if f.problem.is_empty() {
@@ -174,6 +271,98 @@ impl Activity {
             g.recent.pop_front();
         }
         g.recent.push_back(f);
+    }
+
+    /// The counters and histograms, in Prometheus text format, in a stable order.
+    pub fn write_metrics(&self, m: &mut Exposition) {
+        let g = self.inner.lock().unwrap();
+
+        m.family(
+            "tokenshare_upstream_inflight",
+            "gauge",
+            "Requests this delegate has in flight to each upstream (local ollama host or peer).",
+        );
+        for (target, t) in sorted(&g.targets) {
+            m.sample(
+                "tokenshare_upstream_inflight",
+                &[("target", target)],
+                t.inflight,
+            );
+        }
+
+        m.family(
+            "tokenshare_upstream_responses_total",
+            "counter",
+            "Responses that finished streaming, by route, upstream and result \
+             (ok, error_status, or the stream problem).",
+        );
+        for ((route, target, result), n) in sorted(&g.results) {
+            let labels = [("route", *route), ("target", target), ("result", *result)];
+            m.sample("tokenshare_upstream_responses_total", &labels, n);
+        }
+
+        m.family(
+            "tokenshare_upstream_refusals_total",
+            "counter",
+            "Peers that turned a request away before streaming: declined (error status) or unreachable.",
+        );
+        for (target, t) in sorted(&g.targets) {
+            for (reason, n) in [("declined", t.declined), ("unreachable", t.unreachable)] {
+                let labels = [("target", target.as_str()), ("reason", reason)];
+                m.sample("tokenshare_upstream_refusals_total", &labels, n);
+            }
+        }
+
+        m.family(
+            "tokenshare_requests_rejected_total",
+            "counter",
+            "Model requests answered without reaching any upstream: busy (503) or not_found (404).",
+        );
+        for (reason, n) in [("busy", g.busy), ("not_found", g.not_found)] {
+            m.sample(
+                "tokenshare_requests_rejected_total",
+                &[("reason", reason)],
+                n,
+            );
+        }
+
+        for (name, help, hists) in [
+            (
+                "tokenshare_response_ttfb_seconds",
+                "Time from receiving a request to the upstream's response headers.",
+                &g.ttfb,
+            ),
+            (
+                "tokenshare_response_duration_seconds",
+                "Time from receiving a request to the end of its response stream.",
+                &g.duration,
+            ),
+        ] {
+            m.family(name, "histogram", help);
+            for ((route, target), h) in sorted(hists) {
+                let labels = [("route", *route), ("target", target.as_str())];
+                for (le, n) in h.cumulative() {
+                    let with_le = [labels[0], labels[1], ("le", le.as_str())];
+                    m.sample(&format!("{name}_bucket"), &with_le, n);
+                }
+                m.sample(&format!("{name}_sum"), &labels, h.sum());
+                m.sample(&format!("{name}_count"), &labels, h.count());
+            }
+        }
+
+        m.family(
+            "tokenshare_tokens_total",
+            "counter",
+            "Tokens reported in the final chunk of finished responses, by model and kind \
+             (prompt or completion).",
+        );
+        for ((model, kind), n) in sorted(&g.tokens) {
+            m.sample(
+                "tokenshare_tokens_total",
+                &[("model", model), ("kind", *kind)],
+                n,
+            );
+        }
     }
 
     /// Everything above, for `/_ts/status`. Recent responses are newest first.

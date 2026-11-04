@@ -161,6 +161,7 @@ pub fn router_for(state: Arc<AppState>, face: Face) -> Router {
     Router::new()
         .route("/_ts/status", get(status))
         .route("/_ts/dashboard", get(dashboard))
+        .route("/_ts/metrics", get(metrics))
         .route("/_ts/join", post(mesh::join))
         .route("/_ts/announce", post(mesh::announce))
         .route("/_ts/keepalive", post(mesh::keepalive))
@@ -213,6 +214,15 @@ async fn status(State(s): State<Arc<AppState>>) -> Json<Value> {
 /// own, so it shows exactly what `/_ts/status` does to anyone who can reach it.
 async fn dashboard() -> Html<&'static str> {
     Html(include_str!("dashboard.html"))
+}
+
+/// Prometheus text format; see [`crate::metrics`].
+async fn metrics(State(s): State<Arc<AppState>>) -> Response {
+    (
+        [(header::CONTENT_TYPE, crate::metrics::CONTENT_TYPE)],
+        crate::metrics::render(&s),
+    )
+        .into_response()
 }
 
 fn error(status: StatusCode, msg: impl Into<String>) -> Response {
