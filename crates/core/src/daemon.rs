@@ -47,6 +47,7 @@ pub async fn start_on(
     data_dir: PathBuf,
     listeners: Vec<Listener>,
 ) -> Result<Running> {
+    config.validate()?;
     let id = load_or_create_id(&data_dir)?;
     if let Some(h) = config.self_loop_hosts().first() {
         let ports: Vec<String> = listeners.iter().map(|l| l.port.to_string()).collect();
@@ -84,6 +85,7 @@ pub async fn start_on(
         masquerade = config.masquerade,
         hosts = ?config.ollama_hosts,
         pool = config.pool_size,
+        auth = config.secret().is_some(),
         "delegate starting"
     );
 

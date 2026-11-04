@@ -5,7 +5,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -138,9 +138,9 @@ pub fn is_local(ip: IpAddr) -> bool {
         || matches!(ip, IpAddr::V6(v6) if v6.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback()))
 }
 
-/// Forget a delegate (the `tokenshare forget` command). There is no
-/// authentication, so this only answers to this machine; anyone on the network
-/// could otherwise knock delegates out of the table.
+/// Forget a delegate (the `tokenshare forget` command). This only answers to
+/// this machine, even with a pool secret: anyone else in the pool could
+/// otherwise knock delegates out of the table.
 pub async fn forget(
     State(s): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -166,6 +166,14 @@ pub async fn table(State(s): State<Arc<AppState>>) -> Json<TableResponse> {
 
 // ---- client side ----
 
+/// A peer's reply, with a clear error when it turned us away for the secret.
+fn accepted(r: reqwest::Response, url: &str) -> Result<reqwest::Response> {
+    if r.status() == reqwest::StatusCode::UNAUTHORIZED {
+        bail!("{url} refused us: it needs the pool secret, or ours does not match");
+    }
+    Ok(r.error_for_status()?)
+}
+
 /// Tell every other delegate about `entry`.
 async fn announce_new_member(s: Arc<AppState>, entry: DelegateEntry) {
     let from = s.delegates.self_entry().url;
@@ -186,13 +194,13 @@ async fn announce_new_member(s: Arc<AppState>, entry: DelegateEntry) {
         let msg = &msg;
         async move {
             let r = s
-                .client
-                .post(format!("{}/_ts/announce", p.url))
+                .to_peer(s.client.post(format!("{}/_ts/announce", p.url)))
                 .timeout(COORD_TIMEOUT)
                 .json(msg)
                 .send()
                 .await
-                .and_then(|r| r.error_for_status());
+                .map_err(anyhow::Error::from)
+                .and_then(|r| accepted(r, &p.url));
             if let Err(e) = r {
                 warn!(peer = %p.url, error = %e, "announce failed");
                 s.delegates.set_status(&p.id, Status::Unavailable);
@@ -204,15 +212,12 @@ async fn announce_new_member(s: Arc<AppState>, entry: DelegateEntry) {
 
 /// Fetch `url`'s full table and merge it into ours.
 pub async fn pull_table(s: &AppState, url: &str) -> Result<()> {
-    let resp: TableResponse = s
-        .client
-        .get(format!("{url}/_ts/table"))
+    let resp = s
+        .to_peer(s.client.get(format!("{url}/_ts/table")))
         .timeout(COORD_TIMEOUT)
         .send()
-        .await?
-        .error_for_status()?
-        .json()
         .await?;
+    let resp: TableResponse = accepted(resp, url)?.json().await?;
     s.delegates.merge(resp.table);
     Ok(())
 }
@@ -226,16 +231,13 @@ pub async fn join_via(s: &AppState, url: &str) -> Result<()> {
         port: s.config.port,
         models: me.models,
     };
-    let resp: TableResponse = s
-        .client
-        .post(format!("{url}/_ts/join"))
+    let resp = s
+        .to_peer(s.client.post(format!("{url}/_ts/join")))
         .timeout(COORD_TIMEOUT)
         .json(&req)
         .send()
-        .await?
-        .error_for_status()?
-        .json()
         .await?;
+    let resp: TableResponse = accepted(resp, url)?.json().await?;
     let joined_as = resp
         .joined_as
         .ok_or_else(|| anyhow!("join reply had no self entry"))?;
@@ -335,13 +337,13 @@ fn contact_order(s: &AppState, exclude: &[&str]) -> Vec<DelegateEntry> {
 
 async fn post_keepalive(s: &AppState, peer: &DelegateEntry, msg: &Keepalive) -> bool {
     let r = s
-        .client
-        .post(format!("{}/_ts/keepalive", peer.url))
+        .to_peer(s.client.post(format!("{}/_ts/keepalive", peer.url)))
         .timeout(COORD_TIMEOUT)
         .json(msg)
         .send()
         .await
-        .and_then(|r| r.error_for_status());
+        .map_err(anyhow::Error::from)
+        .and_then(|r| accepted(r, &peer.url));
     match r {
         Ok(_) => true,
         Err(e) => {

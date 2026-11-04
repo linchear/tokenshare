@@ -62,6 +62,7 @@ pub fn status_json(s: &AppState) -> Value {
         "draining": s.is_draining(),
         "sharing": s.config.shares_models(),
         "masquerade": s.config.masquerade,
+        "auth": s.secret.is_some(),
         "port": s.config.port,
         "ports": s.config.listen_ports(),
         "pool": { "size": s.pool.size(), "in_use": s.pool.in_use(), "forwarding": s.pool.forwarding() },

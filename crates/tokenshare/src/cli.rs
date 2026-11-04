@@ -18,28 +18,48 @@ pub struct Row {
 pub struct Client {
     base: String,
     http: reqwest::Client,
+    /// The pool secret, sent in case the delegate does not trust this machine.
+    secret: Option<String>,
 }
 
 impl Client {
     /// Talk to the delegate listening on `port` of this machine.
-    pub fn local(port: u16) -> Self {
+    pub fn local(port: u16, secret: Option<&str>) -> Self {
         Self {
             base: format!("http://127.0.0.1:{port}"),
             http: reqwest::Client::new(),
+            secret: secret.map(str::to_string),
+        }
+    }
+
+    fn get(&self, path: &str) -> reqwest::RequestBuilder {
+        self.authed(self.http.get(format!("{}{path}", self.base)))
+    }
+
+    fn post(&self, path: &str) -> reqwest::RequestBuilder {
+        self.authed(self.http.post(format!("{}{path}", self.base)))
+    }
+
+    fn authed(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match &self.secret {
+            Some(s) => rb.bearer_auth(s),
+            None => rb,
         }
     }
 
     /// Our own id, and every delegate we know about (ourselves included).
     pub async fn delegates(&self) -> Result<(String, Vec<Row>)> {
-        let status: Value = self
-            .http
-            .get(format!("{}/_ts/status", self.base))
-            .send()
-            .await
-            .with_context(|| format!("cannot reach a delegate at {} (is it running?)", self.base))?
-            .error_for_status()?
-            .json()
-            .await?;
+        let resp = self.get("/_ts/status").send().await.with_context(|| {
+            format!("cannot reach a delegate at {} (is it running?)", self.base)
+        })?;
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            bail!(
+                "the delegate at {} needs the pool secret: set TOKENSHARE_POOL_SECRET \
+                 or pool_secret in the config file",
+                self.base
+            );
+        }
+        let status: Value = resp.error_for_status()?.json().await?;
         let me = status["id"].as_str().unwrap_or_default().to_string();
         let rows = status["delegates"]
             .as_array()
@@ -68,8 +88,7 @@ impl Client {
     /// Ask the delegate to forget `id`. Returns whether it knew it.
     pub async fn forget(&self, id: &str) -> Result<bool> {
         let resp = self
-            .http
-            .post(format!("{}/_ts/forget", self.base))
+            .post("/_ts/forget")
             .json(&json!({ "id": id }))
             .send()
             .await
@@ -172,14 +191,14 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-pub async fn list(port: u16) -> Result<()> {
-    let (me, rows) = Client::local(port).delegates().await?;
+pub async fn list(port: u16, secret: Option<&str>) -> Result<()> {
+    let (me, rows) = Client::local(port, secret).delegates().await?;
     print!("{}", format_table(&me, &rows, now_ms()));
     Ok(())
 }
 
-pub async fn forget(port: u16, target: &str) -> Result<()> {
-    let client = Client::local(port);
+pub async fn forget(port: u16, secret: Option<&str>, target: &str) -> Result<()> {
+    let client = Client::local(port, secret);
     let (me, rows) = client.delegates().await?;
     let row = resolve(target, &me, &rows)?;
     if client.forget(&row.id).await? {

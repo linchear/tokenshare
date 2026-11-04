@@ -43,10 +43,20 @@ async fn delegate_with_peers() -> Running {
 
 /// Run `tokenshare <args> --port <port>` without blocking the test's runtime.
 async fn run(port: u16, args: &[&str]) -> Output {
+    run_with_secret(port, args, None).await
+}
+
+/// Like [`run`], with `TOKENSHARE_POOL_SECRET` set to `secret` (or unset).
+async fn run_with_secret(port: u16, args: &[&str], secret: Option<&str>) -> Output {
     let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    let secret = secret.map(str::to_string);
     tokio::task::spawn_blocking(move || {
-        Command::new(env!("CARGO_BIN_EXE_tokenshare"))
-            .args(&args)
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_tokenshare"));
+        cmd.env_remove("TOKENSHARE_POOL_SECRET");
+        if let Some(s) = secret {
+            cmd.env("TOKENSHARE_POOL_SECRET", s);
+        }
+        cmd.args(&args)
             .args([
                 "--config",
                 "/nonexistent/tokenshare.toml",
@@ -148,4 +158,34 @@ async fn commands_say_so_when_no_delegate_is_running() {
         "{}",
         text(&out.stderr)
     );
+}
+
+#[tokio::test]
+async fn commands_send_the_pool_secret_from_the_environment() {
+    let dir = std::env::temp_dir().join(format!("ts-cli-secret-{}", std::process::id()));
+    let config = Config {
+        port: 0,
+        ollama_hosts: vec![],
+        advertise_url: Some("http://127.0.0.1:9".into()),
+        pool_secret: Some("cli-test-secret".into()),
+        // Make even this machine show the secret, so the CLI has to send it.
+        trust_localhost: false,
+        ..Config::default()
+    };
+    let d = daemon::start(config, dir).await.unwrap();
+    let port = d.addr.port();
+
+    let out = run_with_secret(port, &["delegates"], None).await;
+    assert!(!out.status.success());
+    assert!(
+        text(&out.stderr).contains("TOKENSHARE_POOL_SECRET"),
+        "{}",
+        text(&out.stderr)
+    );
+    let out = run_with_secret(port, &["delegates"], Some("wrong-secret")).await;
+    assert!(!out.status.success());
+
+    let out = run_with_secret(port, &["delegates"], Some("cli-test-secret")).await;
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(text(&out.stdout).contains("(this delegate)"));
 }

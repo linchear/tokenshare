@@ -161,10 +161,13 @@ Dashboard**), and `/_ts/metrics` exposes it to Prometheus. See
 
 ## Limitations and security
 
-- **There is no authentication and no encryption.** Run it only on a network you
+- **Authentication is optional and there is no encryption.** Without a
+  [`pool_secret`](docs/configuration.md#pool-secret), anyone who can reach a
+  delegate can use every model in the pool and join the mesh. With one, only
+  delegates and clients that send the secret get in (apps on the same machine
+  are trusted). Either way traffic is plain HTTP, so run it only on a network you
   trust (a LAN, or a VPN such as Tailscale) and never expose the port to the
-  internet. Anyone who can reach a delegate can use every model in the pool and
-  join the mesh.
+  internet.
 - **Full mesh.** Every delegate knows every other, so this is for a handful to a
   few dozen machines, not thousands.
 - **Load balancing is approximate.** Peers publish busy slots and warm models with

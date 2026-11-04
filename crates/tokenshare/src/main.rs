@@ -8,6 +8,9 @@ use tracing::info;
 
 mod cli;
 
+/// Overrides `pool_secret` from the config file.
+const SECRET_ENV: &str = "TOKENSHARE_POOL_SECRET";
+
 #[derive(Parser)]
 #[command(version, about = "Route ollama calls amongst several hosts")]
 struct Args {
@@ -72,10 +75,15 @@ async fn main() -> Result<()> {
     if let Some(p) = args.port {
         config.port = p;
     }
+    // From the environment rather than a flag, so it stays out of `ps` listings.
+    if let Ok(secret) = std::env::var(SECRET_ENV) {
+        config.pool_secret = Some(secret);
+    }
     if let Some(cmd) = &args.command {
+        let secret = config.secret();
         return match cmd {
-            Cmd::Delegates => cli::list(config.port).await,
-            Cmd::Forget { target } => cli::forget(config.port, target).await,
+            Cmd::Delegates => cli::list(config.port, secret).await,
+            Cmd::Forget { target } => cli::forget(config.port, secret, target).await,
         };
     }
     if args.fc.is_some() {
