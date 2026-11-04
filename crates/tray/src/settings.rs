@@ -53,6 +53,15 @@ mod tests {
     }
 
     #[test]
+    fn a_save_from_an_older_page_without_the_secret_field_parses() {
+        let m: Message = serde_json::from_str(
+            r#"{"cmd":"save","form":{"fc":"","advertise_url":"","ollama_hosts":"x","port":"1","pool_size":"2","share_with_peers":true,"masquerade":false,"ollama_port":"11434"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(m, Message::Save { form, .. } if form.pool_secret.is_empty()));
+    }
+
+    #[test]
     fn resize_message_parses() {
         let m: Message = serde_json::from_str(r#"{"cmd":"resize","height":523}"#).unwrap();
         assert!(matches!(m, Message::Resize { height } if height == 523.0));

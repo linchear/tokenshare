@@ -42,6 +42,9 @@ pub enum Rejection {
     Busy,
     /// No delegate has the model: answered 404.
     NotFound,
+    /// The request lacked the pool secret: answered 401. Counts every kind of
+    /// request, not only model requests.
+    Unauthorized,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -149,6 +152,7 @@ struct Inner {
     recent: VecDeque<Finished>,
     busy: u64,
     not_found: u64,
+    unauthorized: u64,
     /// Since start, for metrics. Keyed by (route, target, result).
     results: HashMap<(&'static str, String, &'static str), u64>,
     /// Keyed by (route, target).
@@ -223,6 +227,7 @@ impl Activity {
         match why {
             Rejection::Busy => g.busy += 1,
             Rejection::NotFound => g.not_found += 1,
+            Rejection::Unauthorized => g.unauthorized += 1,
         }
     }
 
@@ -316,9 +321,13 @@ impl Activity {
         m.family(
             "tokenshare_requests_rejected_total",
             "counter",
-            "Model requests answered without reaching any upstream: busy (503) or not_found (404).",
+            "Requests answered without reaching any upstream: busy (503), not_found (404) or unauthorized (401, no pool secret).",
         );
-        for (reason, n) in [("busy", g.busy), ("not_found", g.not_found)] {
+        for (reason, n) in [
+            ("busy", g.busy),
+            ("not_found", g.not_found),
+            ("unauthorized", g.unauthorized),
+        ] {
             m.sample(
                 "tokenshare_requests_rejected_total",
                 &[("reason", reason)],
@@ -390,7 +399,7 @@ impl Activity {
         json!({
             "now": now,
             "targets": targets,
-            "rejected": { "busy": g.busy, "not_found": g.not_found },
+            "rejected": { "busy": g.busy, "not_found": g.not_found, "unauthorized": g.unauthorized },
             "recent": g.recent.iter().rev().collect::<Vec<_>>(),
         })
     }

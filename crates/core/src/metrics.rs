@@ -103,6 +103,13 @@ pub fn render(s: &AppState) -> String {
     m.sample("tokenshare_sharing", &[], flag(s.config.shares_models()));
 
     m.family(
+        "tokenshare_auth_required",
+        "gauge",
+        "1 if this delegate requires the pool secret.",
+    );
+    m.sample("tokenshare_auth_required", &[], flag(s.secret.is_some()));
+
+    m.family(
         "tokenshare_pool_slots",
         "gauge",
         "Concurrent requests this delegate sends to its local ollama (pool_size).",

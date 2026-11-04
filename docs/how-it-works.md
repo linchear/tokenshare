@@ -101,6 +101,18 @@ or rejects it and never forwards again, so there are no loops.
   forgetting a dead one sticks while forgetting one that is alive only lasts until
   its next keepalive.
 
+## Authentication
+
+With a `pool_secret`, a middleware in front of every route checks for
+`Authorization: Bearer <secret>`, comparing SHA-256 digests in constant time.
+Delegates add it to everything they send each other, and replace a client's own
+`Authorization` with it when forwarding, so a local app's API key never travels.
+The header is removed before a request reaches ollama. Connections from loopback
+are let in without it unless `trust_localhost` is off, and `GET /`, `/api/version`
+and the dashboard page are always open. A peer that answers 401 is treated like
+any peer that declines: cooled down and skipped. See
+[Configuration](configuration.md#pool-secret).
+
 ## Shutdown
 
 On SIGINT/SIGTERM (or Quit in the tray) a delegate stops gossiping, refuses new
@@ -113,6 +125,9 @@ Anything still streaming after that is cut off with a broken stream.
 - **Full mesh.** Every delegate learns about every other, and a join is announced
   to all of them. This does not scale to large pools; plan for tens of delegates,
   not thousands. Partial gossip views would be the next step.
+- **Gossip is not signed.** The pool secret keeps out delegates that do not have
+  it, but every delegate that has it is trusted completely: it can publish any
+  entry, including other delegates'. Nothing is encrypted.
 - **Clocks.** "Later `last_seen` wins" compares timestamps from different
   machines, so keep clocks roughly in sync (NTP).
 - **`last_seen` is not "seen by me".** A relayed keepalive refreshes an entry with

@@ -11,6 +11,7 @@
   h1 { font-size:15px; margin:0 0 14px; }
   label { display:block; font-weight:600; margin:12px 0 4px; }
   .hint { color:var(--muted); font-size:12px; margin-top:3px; }
+  .hint a { color:var(--accent); }
   input, textarea { width:100%; padding:6px 8px; font:inherit; color:var(--fg); background:var(--field); border:1px solid var(--line); border-radius:6px; }
   input:focus, textarea:focus { outline:2px solid var(--accent); outline-offset:-1px; }
   textarea { height:66px; resize:vertical; font-family: ui-monospace, Menlo, Consolas, monospace; font-size:12px; }
@@ -41,6 +42,10 @@
 
   <label class="check"><input type="checkbox" id="share"> Share my ollama with other delegates</label>
   <div class="hint">Turn off to look unavailable to other delegates: they will not send you requests. You can still use your own ollama and theirs.</div>
+
+  <label for="secret">Pool secret <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
+  <input id="secret" type="password" placeholder="none">
+  <div class="hint">If set, every delegate in the pool must use the same one, and apps on other machines must send it as their API key. Apps on this machine need no change. <a href="#" id="reveal">Show</a></div>
 
   <div class="row">
     <div><label for="pool">Connections to ollama</label><input id="pool" inputmode="numeric"></div>
@@ -76,6 +81,13 @@
   $('port').value = init.port; $('share').checked = init.share_with_peers; $('adv').value = init.advertise_url;
   $('masq').checked = init.masquerade;
   $('oport').value = init.ollama_port;
+  $('secret').value = init.pool_secret || '';
+  $('reveal').onclick = e => {
+    e.preventDefault();
+    const shown = $('secret').type === 'text';
+    $('secret').type = shown ? 'password' : 'text';
+    $('reveal').textContent = shown ? 'Show' : 'Hide';
+  };
   let force = false;            // set after a warning, so the next Save goes through
   if (init.advertise_url || init.ollama_port !== '11434') $('adv').closest('details').open = true;
   // Ask the host to fit the window to the content so it never needs a scrollbar.
@@ -116,7 +128,7 @@
     send({ cmd: 'save', force, form: { fc: $('fc').value, advertise_url: $('adv').value,
       ollama_hosts: $('hosts').value, port: $('port').value, pool_size: $('pool').value,
       share_with_peers: $('share').checked, masquerade: $('masq').checked,
-      ollama_port: $('oport').value } });
+      ollama_port: $('oport').value, pool_secret: $('secret').value } });
   };
   // WKWebView in an app without a working Edit menu ignores Cmd+A/C/X/V, so on
   // macOS we do them ourselves. Copy and paste go through the host's clipboard.

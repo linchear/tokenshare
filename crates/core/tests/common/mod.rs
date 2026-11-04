@@ -36,6 +36,8 @@ pub struct Mock {
     pub chats: Arc<AtomicUsize>,
     /// What `/api/ps` reports as loaded in memory; tests may change it.
     pub loaded: Arc<Mutex<Vec<String>>>,
+    /// The `Authorization` header of each `/api/chat` request, in order.
+    pub chat_auth: Arc<Mutex<Vec<Option<String>>>>,
 }
 
 impl Mock {
@@ -61,6 +63,8 @@ pub async fn mock_ollama(models: &[&str], chunk_delay_ms: u64) -> Mock {
     let chats2 = chats.clone();
     let loaded = Arc::new(Mutex::new(vec!["running-here".to_string()]));
     let loaded2 = loaded.clone();
+    let chat_auth = Arc::new(Mutex::new(vec![]));
+    let chat_auth2 = chat_auth.clone();
     let app = Router::new()
         .route(
             "/api/tags",
@@ -71,9 +75,14 @@ pub async fn mock_ollama(models: &[&str], chunk_delay_ms: u64) -> Mock {
         )
         .route(
             "/api/chat",
-            post(move |Json(req): Json<Value>| {
+            post(move |headers: axum::http::HeaderMap, Json(req): Json<Value>| {
                 let dropped = dropped2.clone();
                 chats2.fetch_add(1, Ordering::SeqCst);
+                chat_auth2.lock().unwrap().push(
+                    headers
+                        .get("authorization")
+                        .map(|v| v.to_str().unwrap().to_string()),
+                );
                 async move {
                     let model = req["model"].as_str().unwrap().to_string();
                     let state = (0, DropFlag(dropped));
@@ -179,6 +188,7 @@ pub async fn mock_ollama(models: &[&str], chunk_delay_ms: u64) -> Mock {
         chat_dropped: dropped,
         chats,
         loaded,
+        chat_auth,
     }
 }
 
@@ -248,6 +258,11 @@ pub struct NodeOpts<'a> {
     pub share: bool,
     /// No local ollama at all: a client-only delegate.
     pub client_only: bool,
+    /// The pool secret, if any.
+    pub secret: Option<&'a str>,
+    /// Let connections from this machine in without the secret (default true).
+    /// Every test runs on loopback, so tests of the secret turn this off.
+    pub trust_localhost: bool,
 }
 
 impl Default for NodeOpts<'_> {
@@ -262,6 +277,8 @@ impl Default for NodeOpts<'_> {
             keepalive_interval_secs: None,
             share: true,
             client_only: false,
+            secret: None,
+            trust_localhost: true,
         }
     }
 }
@@ -283,6 +300,8 @@ pub async fn node(opts: NodeOpts<'_>) -> Node {
         pool_size: opts.pool,
         share_with_peers: opts.share,
         keepalive_interval_secs: opts.keepalive_interval_secs.unwrap_or(30),
+        pool_secret: opts.secret.map(str::to_string),
+        trust_localhost: opts.trust_localhost,
         ..Config::default()
     };
     let state = AppState::new(opts.id.unwrap_or_else(uuid_like), config, opts.data_dir);

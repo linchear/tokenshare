@@ -24,6 +24,9 @@ pub struct Form {
     /// The port ollama clients use while masquerading (default 11434).
     #[serde(default = "default_ollama_port")]
     pub ollama_port: String,
+    /// Shared secret every delegate in the pool must use; blank for none.
+    #[serde(default)]
+    pub pool_secret: String,
 }
 
 impl Form {
@@ -37,6 +40,7 @@ impl Form {
             share_with_peers: c.share_with_peers,
             masquerade: c.masquerade,
             ollama_port: c.ollama_port.to_string(),
+            pool_secret: c.pool_secret.clone().unwrap_or_default(),
         }
     }
 }
@@ -114,6 +118,16 @@ pub fn apply(form: &Form, base: &Config) -> Result<Config, Vec<String>> {
             ports_text(&c.listen_ports())
         ));
     }
+
+    let secret = form.pool_secret.trim();
+    c.pool_secret = if secret.is_empty() {
+        None
+    } else {
+        if let Err(e) = crate::auth::validate(secret) {
+            errors.push(e);
+        }
+        Some(secret.to_string())
+    };
 
     if errors.is_empty() {
         Ok(c)
@@ -319,6 +333,27 @@ mod tests {
             ..form()
         };
         assert!(apply(&f, &Config::default()).is_err());
+    }
+
+    #[test]
+    fn the_pool_secret_is_trimmed_checked_and_optional() {
+        let f = Form {
+            pool_secret: "  s3cret-pool  ".into(),
+            ..form()
+        };
+        let c = apply(&f, &Config::default()).unwrap();
+        assert_eq!(c.pool_secret.as_deref(), Some("s3cret-pool"));
+        assert_eq!(Form::from_config(&c).pool_secret, "s3cret-pool");
+        let cleared = apply(&form(), &c).unwrap();
+        assert_eq!(cleared.pool_secret, None, "a blank field removes it");
+        for bad in ["short", "has spaces in it"] {
+            let f = Form {
+                pool_secret: bad.into(),
+                ..form()
+            };
+            let errors = apply(&f, &Config::default()).unwrap_err();
+            assert!(errors[0].contains("pool secret"), "{bad}: {errors:?}");
+        }
     }
 
     #[test]

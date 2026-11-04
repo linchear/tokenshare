@@ -62,6 +62,14 @@
   .legend { color: var(--muted); font-size: 12px; margin-top: 8px; }
   #err { display: none; margin-bottom: 16px; padding: 10px 14px; border-radius: 8px;
          border: 1px solid var(--red); color: var(--red); background: var(--panel); }
+  #login { display: none; margin-bottom: 16px; padding: 14px; border-radius: 10px;
+           border: 1px solid var(--line); background: var(--panel); }
+  #login p { margin: 0 0 10px; }
+  #login form { display: flex; gap: 8px; flex-wrap: wrap; }
+  #login input { flex: 1; min-width: 200px; padding: 6px 8px; font: inherit; color: var(--text);
+                 background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+  #login button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--blue);
+                  background: var(--blue); color: #fff; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -74,6 +82,14 @@
     <span id="updated" class="muted"></span>
   </header>
   <div id="err"></div>
+  <div id="login">
+    <p><b>This delegate needs the pool secret.</b>
+      <span class="muted">It is kept in this browser tab only. On the delegate's own machine no secret is needed.</span></p>
+    <form id="login-form" autocomplete="off">
+      <input id="secret" type="password" placeholder="Pool secret" aria-label="Pool secret">
+      <button type="submit">Show the pool</button>
+    </form>
+  </div>
   <div class="tiles" id="tiles"></div>
 
   <section>
@@ -156,7 +172,8 @@ function render(s) {
 
   $("state").outerHTML = `<span id="state">${pill(s.state, STATE_LABEL[s.state] || s.state)}</span>`;
   $("who").textContent = `delegate ${short(s.id)}${self ? " · " + host(self.url) : ""} · v${s.version || "?"}`
-    + (s.draining ? " · shutting down" : "") + (s.sharing ? "" : " · not sharing");
+    + (s.draining ? " · shutting down" : "") + (s.sharing ? "" : " · not sharing")
+    + (s.auth ? " · secret required" : "");
   $("updated").textContent = "updated " + time(Date.now());
   document.title = `Token Share · ${STATE_LABEL[s.state] || s.state}`;
 
@@ -171,12 +188,14 @@ function render(s) {
   const recent = act.recent || [];
   const problems = recent.filter((r) => r.problem).length;
   const rej = act.rejected || {};
+  const denied = rej.unauthorized || 0;
   $("tiles").innerHTML = [
     tile("Local slots", `${s.pool.in_use} / ${s.pool.size}`, `${s.pool.forwarding} forwarded to peers`),
     tile("Delegates online", `${online.length + 1} / ${peers.length + 1}`, "including this one"),
     tile("Models in the pool", pool.size, `${warm.size} warm`),
     tile("Recent problems", `<span class="${problems ? "warn" : ""}">${problems}</span>`, `of the last ${recent.length} responses`),
-    tile("Turned away", (rej.busy || 0) + (rej.not_found || 0), `${rej.busy || 0} busy · ${rej.not_found || 0} unknown model`),
+    tile("Turned away", (rej.busy || 0) + (rej.not_found || 0) + denied,
+      `${rej.busy || 0} busy · ${rej.not_found || 0} unknown model` + (s.auth || denied ? ` · ${denied} without the secret` : "")),
   ].join("");
 
   // Delegates: this one first, then online peers, then the rest.
@@ -243,9 +262,36 @@ function render(s) {
     : '<tbody><tr><td class="empty">No responses yet.</td></tr></tbody>';
 }
 
+// The pool secret, when the page is opened from another machine. Kept for this
+// tab only; storage can be unavailable (private windows), so it is optional.
+let secret = "";
+try { secret = sessionStorage.getItem("ts-secret") || ""; } catch {}
+
+function askForSecret(wrong) {
+  $("login").style.display = "block";
+  $("err").style.display = wrong ? "block" : "none";
+  $("err").textContent = wrong ? "That secret was not accepted." : "";
+  $("state").outerHTML = `<span id="state">${pill("error", "Locked")}</span>`;
+  $("secret").focus();
+}
+
+$("login-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  secret = $("secret").value.trim();
+  try { sessionStorage.setItem("ts-secret", secret); } catch {}
+  $("login").style.display = "none";
+  poll();
+});
+
 async function poll() {
   try {
-    const r = await fetch("/_ts/status", { cache: "no-store" });
+    const headers = secret ? { Authorization: "Bearer " + secret } : {};
+    const r = await fetch("/_ts/status", { cache: "no-store", headers });
+    if (r.status === 401) {
+      // Stop polling until a secret is entered.
+      askForSecret(!!secret);
+      return;
+    }
     if (!r.ok) throw new Error("status " + r.status);
     render(await r.json());
     $("err").style.display = "none";
@@ -253,9 +299,8 @@ async function poll() {
     $("err").textContent = "Cannot reach this delegate (" + e.message + "). Retrying…";
     $("err").style.display = "block";
     $("state").outerHTML = `<span id="state">${pill("error", "Unreachable")}</span>`;
-  } finally {
-    setTimeout(poll, POLL_MS);
   }
+  setTimeout(poll, POLL_MS);
 }
 poll();
 </script>

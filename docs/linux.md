@@ -11,8 +11,9 @@ that it works. For how it works in general, see the main [README](../README.md).
 - [ollama](https://ollama.com) running on this machine (optional; see
   [Client-only](#client-only-no-local-ollama)).
 - Other machines running Token Share on the same trusted network (LAN or a VPN
-  such as Tailscale). There is **no authentication or encryption**, so never
-  expose the port to the internet.
+  such as Tailscale). Traffic is **not encrypted** and authentication is optional
+  (a [pool secret](configuration.md#pool-secret)), so never expose the port to
+  the internet.
 
 ## Install
 
@@ -151,7 +152,9 @@ sudo ufw allow from 192.168.2.0/24 to any port 11343 proto tcp     # ufw
 sudo firewall-cmd --add-port=11343/tcp --permanent && sudo firewall-cmd --reload   # firewalld
 ```
 
-Restrict it to your own network; the service has no authentication.
+Restrict it to your own network. To also keep out other machines on it, set the
+same [`pool_secret`](configuration.md#pool-secret) on every delegate; the
+`tokenshare` commands on this machine need nothing extra.
 
 If a machine is reachable by several addresses (multiple interfaces, a VPN, NAT),
 set `advertise_url` to the one other delegates should use, for example

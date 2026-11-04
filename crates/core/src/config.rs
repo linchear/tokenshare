@@ -50,6 +50,15 @@ pub struct Config {
     /// delegate refuses stale entries from others too, so they do not come back.
     /// 0 keeps everything forever.
     pub peer_expiry_secs: u64,
+    /// Shared secret for the pool. When set, delegates and clients on other
+    /// machines must send it as `Authorization: Bearer <secret>`, and this
+    /// delegate sends it to its peers. Every delegate in the pool needs the same
+    /// one. Unset (the default) means no authentication. See [`crate::auth`].
+    pub pool_secret: Option<String>,
+    /// With a `pool_secret`, let connections from this machine in without it,
+    /// so local apps and the CLI need no change. Turn off if something on this
+    /// machine relays traffic from elsewhere (a tunnel or reverse proxy).
+    pub trust_localhost: bool,
 }
 
 impl Default for Config {
@@ -70,6 +79,8 @@ impl Default for Config {
             sync_interval_secs: 60,
             shutdown_grace_secs: 30,
             peer_expiry_secs: 86_400,
+            pool_secret: None,
+            trust_localhost: true,
         }
     }
 }
@@ -128,6 +139,22 @@ impl Config {
         self.share_with_peers
     }
 
+    /// The pool secret, if one is set (blank counts as unset).
+    pub fn secret(&self) -> Option<&str> {
+        self.pool_secret
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Problems that stop a delegate from starting with this config.
+    pub fn validate(&self) -> Result<()> {
+        if let Some(s) = self.secret() {
+            crate::auth::validate(s).map_err(|e| anyhow::anyhow!("{e} (pool_secret)"))?;
+        }
+        Ok(())
+    }
+
     /// Configured ollama hosts that are really this delegate (a loopback address
     /// on our own listen port), which would make requests loop back into us.
     pub fn self_loop_hosts(&self) -> Vec<String> {
@@ -175,6 +202,13 @@ impl Config {
             toml::to_string_pretty(self).context("serializing config")?,
         )
         .with_context(|| format!("writing {}", tmp.display()))?;
+        // The pool secret is a password: keep it from other users of this machine.
+        #[cfg(unix)]
+        if self.secret().is_some() {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("restricting {}", tmp.display()))?;
+        }
         std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
     }
 }
@@ -404,6 +438,41 @@ mod tests {
             (c.fc, None, 7)
         );
         assert_eq!(back.ollama_hosts, c.ollama_hosts);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn the_pool_secret_is_optional_trimmed_and_checked() {
+        assert_eq!(Config::default().secret(), None);
+        assert!(Config::default().trust_localhost);
+        let c: Config = toml::from_str("pool_secret = \"  s3cret-pool \"").unwrap();
+        assert_eq!(c.secret(), Some("s3cret-pool"));
+        assert!(c.validate().is_ok());
+        let blank: Config = toml::from_str("pool_secret = \"  \"").unwrap();
+        assert_eq!(blank.secret(), None);
+        assert!(blank.validate().is_ok());
+        let short: Config = toml::from_str("pool_secret = \"abc\"").unwrap();
+        assert!(short
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("pool_secret"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_config_with_a_secret_is_saved_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("ts-cfg-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("config.toml");
+        let c = Config {
+            pool_secret: Some("s3cret-pool".into()),
+            ..Config::default()
+        };
+        c.save(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        assert_eq!(Config::load(&path).unwrap().secret(), Some("s3cret-pool"));
         std::fs::remove_dir_all(dir).ok();
     }
 

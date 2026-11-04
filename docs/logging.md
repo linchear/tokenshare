@@ -68,6 +68,9 @@ scrape_configs:
     metrics_path: /_ts/metrics
     static_configs:
       - targets: ["gpu-box:11343", "laptop:11343"]
+    # Only with a pool secret:
+    authorization:
+      credentials: correct-horse-battery-staple
 ```
 
 | Metric | Type | Labels | |
@@ -75,6 +78,7 @@ scrape_configs:
 | `tokenshare_info` | gauge | `id`, `version` | always 1 |
 | `tokenshare_state` | gauge | `state` | 1 for the current state (`active`, `in-use`, `no-models`, `down`) |
 | `tokenshare_draining`, `tokenshare_sharing` | gauge | | 0 or 1 |
+| `tokenshare_auth_required` | gauge | | 1 if this delegate requires the pool secret |
 | `tokenshare_pool_slots`, `tokenshare_pool_slots_in_use` | gauge | | local ollama slots |
 | `tokenshare_forwarding` | gauge | | requests being forwarded to peers |
 | `tokenshare_ollama_up`, `_models`, `_loaded_models` | gauge | `host` | per local ollama host |
@@ -85,7 +89,7 @@ scrape_configs:
 | `tokenshare_upstream_inflight` | gauge | `target` | this delegate's requests in flight per upstream |
 | `tokenshare_upstream_responses_total` | counter | `route`, `target`, `result` | finished responses; `result` is `ok`, `error_status` or the stream problem (`no_final_chunk`, `upstream_error`, `cut_off`, `client_left_early`) |
 | `tokenshare_upstream_refusals_total` | counter | `target`, `reason` | `declined` or `unreachable` before streaming |
-| `tokenshare_requests_rejected_total` | counter | `reason` | `busy` (503) or `not_found` (404) |
+| `tokenshare_requests_rejected_total` | counter | `reason` | `busy` (503), `not_found` (404) or `unauthorized` (401, any request without the pool secret) |
 | `tokenshare_response_ttfb_seconds` | histogram | `route`, `target` | request to response headers |
 | `tokenshare_response_duration_seconds` | histogram | `route`, `target` | request to end of stream |
 | `tokenshare_tokens_total` | counter | `model`, `kind` | `prompt` and `completion` tokens from final chunks |
@@ -93,8 +97,9 @@ scrape_configs:
 `route` is `local`, `peer` or `passthrough`; `target` is an ollama host or a peer's
 URL. Counters start at zero when the delegate starts. Each delegate reports only
 its own view, so scrape every delegate: a request forwarded from C to A shows up as
-`route="peer"` on C and `route="local"` on A. Like everything else here, there is
-no authentication: anyone who can reach the port can scrape it.
+`route="peer"` on C and `route="local"` on A. Without a
+[pool secret](configuration.md#pool-secret) anyone who can reach the port can
+scrape it; with one, a scraper on another machine needs the secret (above).
 
 ## Dashboard
 
@@ -102,4 +107,6 @@ no authentication: anyone who can reach the port can scrape it.
 two seconds and shows the delegates with their slots and warm models, the local
 ollama hosts, and recent responses with how they ended. The tray app opens it from
 **Open Dashboard**. It needs no internet access, and it shows only what
-`/_ts/status` already does to anyone who can reach the port.
+`/_ts/status` does. With a [pool secret](configuration.md#pool-secret), opening it
+from another machine asks for the secret, which is kept for that browser tab
+only.

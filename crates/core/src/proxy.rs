@@ -17,6 +17,7 @@ use serde_json::{json, Value};
 use tracing::{info, warn};
 
 use crate::activity::{Activity, Refusal, Rejection};
+use crate::auth::Secret;
 use crate::config::{Config, Face};
 use crate::mesh;
 use crate::ollama::{model_matches, peer_model_entry, LocalTable};
@@ -60,6 +61,8 @@ pub struct AppState {
     /// What this delegate has seen of its upstreams, for routing and the dashboard.
     pub activity: Arc<Activity>,
     pub client: reqwest::Client,
+    /// The pool secret, if the pool uses one (see [`crate::auth`]).
+    pub secret: Option<Secret>,
     /// Keepalive message IDs already handled, so relays cannot loop.
     seen_keepalives: Mutex<HashMap<String, Instant>>,
     draining: AtomicBool,
@@ -80,7 +83,12 @@ impl AppState {
             data_dir.map(|d| d.join("table.json")),
         )
         .with_expiry_secs(config.peer_expiry_secs);
+        // `daemon::start` checks the config first, with a friendlier error.
+        let secret = config
+            .secret()
+            .map(|s| Secret::new(s).expect("pool_secret is invalid"));
         Arc::new(Self {
+            secret,
             id,
             table: LocalTable::new(&config.ollama_hosts),
             delegates,
@@ -114,6 +122,14 @@ impl AppState {
         let now = Instant::now();
         seen.retain(|_, t| now.duration_since(*t) < Duration::from_secs(600));
         seen.insert(msg_id.to_string(), now).is_none()
+    }
+
+    /// `rb`, a request to another delegate, with the pool secret if there is one.
+    pub fn to_peer(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match &self.secret {
+            Some(s) => rb.header(header::AUTHORIZATION, s.header().clone()),
+            None => rb,
+        }
     }
 
     /// Re-query local ollama hosts and publish the result in our own entry.
@@ -168,6 +184,10 @@ pub fn router_for(state: Arc<AppState>, face: Face) -> Router {
         .route("/_ts/table", get(mesh::table))
         .route("/_ts/forget", post(mesh::forget))
         .fallback(proxy)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::auth::require,
+        ))
         .layer(axum::Extension(face))
         .with_state(state)
 }
@@ -279,9 +299,12 @@ struct Outbound<'a> {
     method: &'a Method,
     headers: &'a HeaderMap,
     body: &'a Bytes,
+    /// Sent to peers in place of whatever `Authorization` the client sent.
+    peer_auth: Option<&'a HeaderValue>,
 }
 
 impl Outbound<'_> {
+    /// Send to `url`: a peer delegate when `visited` is set, else a local ollama.
     async fn send(&self, url: String, visited: Option<&str>) -> reqwest::Result<reqwest::Response> {
         let mut headers = copy_headers(self.headers);
         if let Some(v) = visited {
@@ -289,6 +312,9 @@ impl Outbound<'_> {
                 VISITED_HEADER,
                 HeaderValue::from_str(v).expect("ids are ascii"),
             );
+            if let Some(auth) = self.peer_auth {
+                headers.insert(header::AUTHORIZATION, auth.clone());
+            }
         }
         self.client
             .request(self.method.clone(), url)
@@ -438,6 +464,7 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
         method: &parts.method,
         headers: &parts.headers,
         body: &bytes,
+        peer_auth: s.secret.as_ref().map(Secret::header),
     };
 
     // `ollama run` looks the model up with /api/show before chatting. It is

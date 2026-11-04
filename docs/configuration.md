@@ -18,6 +18,8 @@ pool_size = 3
 | `ollama_hosts` | `["http://localhost:11434"]` | Ollama instances reachable from this machine. Optional: `[]` makes a [client-only](#client-only) delegate |
 | `pool_size` | `3` | Max concurrent requests to ollama |
 | `share_with_peers` | `true` | Let other delegates use this machine's ollama ([see below](#not-sharing)) |
+| `pool_secret` | none | Shared secret every delegate in the pool must use ([see below](#pool-secret)). The `TOKENSHARE_POOL_SECRET` environment variable overrides it |
+| `trust_localhost` | `true` | With a `pool_secret`, let connections from this machine in without it |
 | `poll_interval_secs` | `10` | How often to refresh local models |
 | `rejoin_retry_secs` | `300` | Wait before retrying when no delegate answered |
 | `keepalive_interval_secs` | `30` | Keepalive period |
@@ -57,6 +59,9 @@ Options:
   --client-only                Use no local ollama; only borrow other delegates'
   --pool-size <N>              Max concurrent ollama connections (default 3)
 ```
+
+The pool secret is read from the config file or the `TOKENSHARE_POOL_SECRET`
+environment variable, not from a flag, so it does not show up in process listings.
 
 Set `RUST_LOG` to change the log level. Logs list metrics only, never request
 content; see [Logging](logging.md).
@@ -112,6 +117,52 @@ request with 503 in case a peer's view is stale. Its own users are unaffected:
 requests to it are still served by its local ollama and, failing that, by other
 delegates. The menu shows "(not sharing)" and `/_ts/status` reports
 `"sharing": false`.
+
+## Pool secret
+
+By default anyone who can reach a delegate's port can use the pool and join it.
+Set the same `pool_secret` on every delegate (or *Pool secret* in Settings) to
+require it:
+
+```toml
+pool_secret = "correct-horse-battery-staple"
+```
+
+- **Delegates** send it to each other (`Authorization: Bearer <secret>`) on every
+  join, keepalive, table pull and forwarded request. A delegate without it, or
+  with a different one, cannot join, and a peer that refuses it is skipped like a
+  busy one. The log says `refused us: it needs the pool secret, or ours does not
+  match`.
+- **Apps on this machine** need no change: connections from this machine are
+  trusted (`trust_localhost`). This covers apps pointed at the delegate or its
+  masquerade port, the `tokenshare` commands and the tray's dashboard.
+- **Apps on other machines** must send the secret as a bearer token. For
+  OpenAI-style clients that is the API key (`OPENAI_API_KEY=<secret>`, or the
+  "API key" field). The ollama CLI cannot send one; run a delegate on that
+  machine instead, which is the usual setup anyway.
+- **Open without it:** `GET /` and `/api/version` (health checks) and the
+  dashboard page. The dashboard asks for the secret when its data is refused,
+  and keeps it for that browser tab only.
+- **Ollama never sees it:** the delegate removes it before passing a request on.
+
+Requests refused for the secret are answered `401`, logged with the caller's
+address, and counted as `unauthorized` in the dashboard's *Turned away* tile and
+in `tokenshare_requests_rejected_total`.
+
+The secret must be at least 8 characters of letters, digits and punctuation (no
+spaces). When it is set, the config file is saved readable by its owner only on
+macOS and Linux. Changing it means changing it on every delegate; until they all
+match, the pool splits into the delegates that share each secret.
+
+Turn `trust_localhost` off when something on this machine relays traffic from
+elsewhere (an SSH tunnel, a reverse proxy, a container's port forward); such
+connections look local too. The `tokenshare` commands then send the configured
+secret themselves.
+
+The secret is a password, not encryption. Traffic between delegates is plain
+HTTP, so anyone who can watch the network can read it and the prompts. Use it on a
+network you trust or over a VPN such as WireGuard or Tailscale, and never expose
+the port to the internet.
 
 ## The tray app
 
