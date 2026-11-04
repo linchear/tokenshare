@@ -16,6 +16,9 @@ pub struct HostEntry {
     pub host: String,
     pub up: bool,
     pub models: Vec<ModelInfo>,
+    /// Models loaded in memory right now (`/api/ps`), so a request starts
+    /// without a load. Empty when unknown.
+    pub loaded: Vec<String>,
 }
 
 /// The ollama instances directly reachable from this delegate, and their models.
@@ -47,6 +50,7 @@ impl LocalTable {
                 host: normalize_host(h),
                 up: false,
                 models: vec![],
+                loaded: vec![],
             })
             .collect();
         Self {
@@ -63,15 +67,25 @@ impl LocalTable {
             .iter()
             .map(|e| e.host.clone())
             .collect();
-        let results =
-            futures_util::future::join_all(hosts.iter().map(|h| fetch_models(client, h))).await;
+        let results = futures_util::future::join_all(hosts.iter().map(|h| async move {
+            let models = fetch_models(client, h).await;
+            // Which models are warm is a hint for routing; an ollama that cannot
+            // say (an older one, or a stand-in) is simply treated as all cold.
+            let loaded = match &models {
+                Ok(_) => fetch_loaded(client, h).await.unwrap_or_default(),
+                Err(_) => vec![],
+            };
+            (models, loaded)
+        }))
+        .await;
         let mut guard = self.inner.write().unwrap();
-        for (entry, result) in guard.iter_mut().zip(results) {
+        for (entry, (result, loaded)) in guard.iter_mut().zip(results) {
             match result {
                 Ok(models) => {
-                    debug!(host = %entry.host, models = models.len(), "ollama host up");
+                    debug!(host = %entry.host, models = models.len(), loaded = loaded.len(), "ollama host up");
                     entry.up = true;
                     entry.models = models;
+                    entry.loaded = loaded;
                 }
                 Err(e) => {
                     if entry.up {
@@ -79,18 +93,35 @@ impl LocalTable {
                     }
                     entry.up = false;
                     entry.models.clear();
+                    entry.loaded.clear();
                 }
             }
         }
     }
 
+    /// A host that has `model`, preferring one where it is already loaded.
     pub fn host_for_model(&self, model: &str) -> Option<String> {
-        self.inner
-            .read()
-            .unwrap()
-            .iter()
-            .find(|e| e.up && e.models.iter().any(|m| model_matches(model, &m.name)))
+        let g = self.inner.read().unwrap();
+        let has = |e: &&HostEntry| e.up && e.models.iter().any(|m| model_matches(model, &m.name));
+        let warm = |e: &&HostEntry| e.loaded.iter().any(|m| model_matches(model, m));
+        g.iter()
+            .filter(has)
+            .find(warm)
+            .or_else(|| g.iter().find(has))
             .map(|e| e.host.clone())
+    }
+
+    /// Models loaded in memory on any host, deduplicated.
+    pub fn loaded_models(&self) -> Vec<String> {
+        let mut out: Vec<String> = vec![];
+        for e in self.inner.read().unwrap().iter().filter(|e| e.up) {
+            for m in &e.loaded {
+                if !out.contains(m) {
+                    out.push(m.clone());
+                }
+            }
+        }
+        out
     }
 
     pub fn first_up(&self) -> Option<String> {
@@ -190,6 +221,27 @@ async fn fetch_models(client: &reqwest::Client, host: &str) -> anyhow::Result<Ve
                         raw: m.clone(),
                     })
                 })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// Names of the models `host` has loaded in memory, from `/api/ps`.
+async fn fetch_loaded(client: &reqwest::Client, host: &str) -> anyhow::Result<Vec<String>> {
+    let body: Value = client
+        .get(format!("{host}/api/ps"))
+        .timeout(Duration::from_secs(3))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    Ok(body["models"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| m["name"].as_str().or_else(|| m["model"].as_str()))
+                .map(str::to_string)
                 .collect()
         })
         .unwrap_or_default())

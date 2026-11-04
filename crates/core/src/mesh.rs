@@ -52,6 +52,7 @@ pub struct Announce {
 }
 
 fn table_response(s: &AppState, joined_as: Option<DelegateEntry>) -> TableResponse {
+    s.publish_load();
     TableResponse {
         hash: s.delegates.hash(),
         count: s.delegates.count(),
@@ -355,6 +356,7 @@ async fn post_keepalive(s: &AppState, peer: &DelegateEntry, msg: &Keepalive) -> 
 /// unavailable and try another. Returns whether any peer received it.
 pub async fn send_keepalive(s: &AppState) -> bool {
     s.delegates.touch_self();
+    s.publish_load();
     let msg = Keepalive {
         msg_id: uuid::Uuid::new_v4().to_string(),
         via: s.id.clone(),

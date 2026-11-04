@@ -149,6 +149,8 @@ pub struct StreamMeta {
     pub status: u16,
     pub kind: Kind,
     pub ttfb_ms: u64,
+    /// Where the finished response is recorded for routing and the dashboard.
+    pub activity: Option<std::sync::Arc<crate::activity::Activity>>,
 }
 
 /// Follows one response as it streams and logs how it ended. The log line is
@@ -236,6 +238,24 @@ impl Drop for StreamTracker {
             emit!(info, m, outcome, problem, self.bytes, info, error);
         } else {
             emit!(warn, m, outcome, problem, self.bytes, info, error);
+        }
+        if let Some(activity) = &m.activity {
+            activity.finished(crate::activity::Finished {
+                at: crate::table::now_ms(),
+                method: m.method.clone(),
+                path: m.path.clone(),
+                model: m.model.clone(),
+                route: m.route,
+                target: m.target.clone(),
+                status: m.status,
+                outcome,
+                problem,
+                bytes: self.bytes,
+                ttfb_ms: m.ttfb_ms,
+                total_ms: m.started.elapsed().as_millis() as u64,
+                prompt_tokens: info.prompt_tokens,
+                completion_tokens: info.completion_tokens,
+            });
         }
     }
 }
@@ -364,6 +384,7 @@ mod tests {
             status: 200,
             kind: Kind::Sse,
             ttfb_ms: 0,
+            activity: None,
         });
         for _ in 0..100 {
             t.feed(&[b'x'; 1000]);

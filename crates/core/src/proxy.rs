@@ -8,19 +8,20 @@ use std::time::{Duration, Instant};
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
 use futures_util::StreamExt;
-use rand::seq::SliceRandom;
 use serde_json::{json, Value};
 use tracing::{info, warn};
 
+use crate::activity::{Activity, Refusal, Rejection};
 use crate::config::{Config, Face};
 use crate::mesh;
 use crate::ollama::{model_matches, peer_model_entry, LocalTable};
 use crate::pool::Pool;
+use crate::routing;
 use crate::streamlog::{Kind, Outcome, StreamMeta, StreamTracker};
 use crate::table::DelegateTable;
 
@@ -56,6 +57,8 @@ pub struct AppState {
     /// All known delegates, including this one.
     pub delegates: DelegateTable,
     pub pool: Pool,
+    /// What this delegate has seen of its upstreams, for routing and the dashboard.
+    pub activity: Arc<Activity>,
     pub client: reqwest::Client,
     /// Keepalive message IDs already handled, so relays cannot loop.
     seen_keepalives: Mutex<HashMap<String, Instant>>,
@@ -82,6 +85,7 @@ impl AppState {
             table: LocalTable::new(&config.ollama_hosts),
             delegates,
             pool: Pool::new(config.pool_size),
+            activity: Activity::new(),
             config,
             client,
             seen_keepalives: Mutex::new(HashMap::new()),
@@ -126,6 +130,22 @@ impl AppState {
             vec![]
         };
         self.delegates.update_self(models);
+        self.publish_load();
+    }
+
+    /// Put our current capacity and warm models in our own entry, so the next
+    /// keepalive or table pull carries them. A delegate that does not share
+    /// publishes none: peers never route to it anyway.
+    pub fn publish_load(&self) {
+        if self.config.shares_models() && !self.config.ollama_hosts.is_empty() {
+            self.delegates.set_self_load(
+                Some(self.pool.size() as u32),
+                Some(self.pool.in_use() as u32),
+                self.table.loaded_models(),
+            );
+        } else {
+            self.delegates.set_self_load(None, None, vec![]);
+        }
     }
 }
 
@@ -140,6 +160,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 pub fn router_for(state: Arc<AppState>, face: Face) -> Router {
     Router::new()
         .route("/_ts/status", get(status))
+        .route("/_ts/dashboard", get(dashboard))
         .route("/_ts/join", post(mesh::join))
         .route("/_ts/announce", post(mesh::announce))
         .route("/_ts/keepalive", post(mesh::keepalive))
@@ -186,6 +207,12 @@ pub async fn poll_local_table(state: Arc<AppState>) {
 
 async fn status(State(s): State<Arc<AppState>>) -> Json<Value> {
     Json(crate::status::status_json(&s))
+}
+
+/// A page that polls `/_ts/status` and shows the pool. It carries no data of its
+/// own, so it shows exactly what `/_ts/status` does to anyone who can reach it.
+async fn dashboard() -> Html<&'static str> {
+    Html(include_str!("dashboard.html"))
 }
 
 fn error(status: StatusCode, msg: impl Into<String>) -> Response {
@@ -394,6 +421,7 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
         status: 0,
         kind: Kind::Other,
         ttfb_ms: 0,
+        activity: Some(s.activity.clone()),
     };
     let out = Outbound {
         client: &s.client,
@@ -474,12 +502,13 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
             Some(None)
         };
         if let Some(permit) = permit {
+            let flight = s.activity.start(host);
             return match out.send(format!("{host}{path_and_query}"), None).await {
                 Ok(resp) => {
                     log(host, resp.status().as_u16());
                     stream_response(
                         resp,
-                        permit,
+                        (permit, flight),
                         s.cutoff.subscribe(),
                         meta("local", host, Some(&model)),
                     )
@@ -497,12 +526,16 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
     if !forwarded {
         visited.push(s.id.clone());
         let visited_header = visited.join(",");
-        let mut peers = s.delegates.peers_with_model(&model, &visited);
-        peers.shuffle(&mut rand::rng());
+        let peers = routing::order(
+            s.delegates.peers_with_model(&model, &visited),
+            &model,
+            &s.activity,
+        );
         candidates_exist |= !peers.is_empty();
         // Counts as in-flight from the first attempt until the stream ends.
         let mut guard = Some(s.pool.track_forward());
         for peer in peers {
+            let flight = s.activity.start(&peer.url);
             // Retrying is safe only until the first byte reaches the client.
             match out
                 .send(
@@ -515,15 +548,17 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
                     log(&peer.url, resp.status().as_u16());
                     return stream_response(
                         resp,
-                        guard.take(),
+                        (guard.take(), flight),
                         s.cutoff.subscribe(),
                         meta("peer", &peer.url, Some(&model)),
                     );
                 }
                 Ok(resp) => {
+                    s.activity.refused(&peer.url, Refusal::Declined);
                     info!(peer = %peer.url, status = resp.status().as_u16(), "peer declined, trying next")
                 }
                 Err(e) => {
+                    s.activity.refused(&peer.url, Refusal::Unreachable);
                     warn!(peer = %peer.url, error = %e, "peer unreachable, trying next");
                     if e.is_connect() {
                         s.delegates
@@ -536,9 +571,11 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
 
     if candidates_exist {
         log("-", 503);
+        s.activity.rejected(Rejection::Busy);
         busy()
     } else {
         log("-", 404);
+        s.activity.rejected(Rejection::NotFound);
         error(StatusCode::NOT_FOUND, format!("model '{model}' not found"))
     }
 }

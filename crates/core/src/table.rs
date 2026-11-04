@@ -34,6 +34,17 @@ pub struct DelegateEntry {
     pub vram: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ram: Option<u64>,
+    /// How many requests this delegate sends to its ollama at once (`pool_size`).
+    /// Absent from delegates that predate load-aware routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slots: Option<u32>,
+    /// How many of those slots were in use when the entry was last published.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub busy: Option<u32>,
+    /// Models loaded in memory on its ollama right now (`/api/ps`): a request
+    /// for one of these starts without waiting for the model to load.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loaded: Vec<String>,
     /// Unix milliseconds. The entry with the later `last_seen` wins a merge.
     pub last_seen: u64,
 }
@@ -56,6 +67,9 @@ impl DelegateEntry {
             load: None,
             vram: None,
             ram: None,
+            slots: None,
+            busy: None,
+            loaded: vec![],
             last_seen: now_ms(),
         }
     }
@@ -201,6 +215,17 @@ impl DelegateTable {
             me.last_seen = now_ms();
         }
         self.persist();
+    }
+
+    /// Publish our current capacity and warm models. Does not bump `last_seen`:
+    /// these change constantly, and travel with the next keepalive or table pull.
+    /// Not persisted either, since they mean nothing after a restart.
+    pub fn set_self_load(&self, slots: Option<u32>, busy: Option<u32>, loaded: Vec<String>) {
+        let mut g = self.inner.write().unwrap();
+        let me = g.get_mut(&self.self_id).unwrap();
+        me.slots = slots;
+        me.busy = busy;
+        me.loaded = loaded;
     }
 
     /// Bump our own `last_seen` (we are alive) without touching anything else.

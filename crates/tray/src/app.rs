@@ -213,6 +213,8 @@ pub fn run() {
     let headline = MenuItem::new("Token Share: starting", false, None);
     let pool = MenuItem::new("", false, None);
     let peers = Submenu::new("Delegates", true);
+    let dashboard_item = MenuItem::new("Open Dashboard", true, None);
+    let dashboard_id: MenuId = dashboard_item.id().clone();
     let settings_item = MenuItem::new("Settings…", config_path.is_some(), None);
     let settings_id: MenuId = settings_item.id().clone();
     let quit = MenuItem::new("Quit Token Share", true, None);
@@ -239,6 +241,7 @@ pub fn run() {
                     &pool,
                     &peers,
                     &PredefinedMenuItem::separator(),
+                    &dashboard_item,
                     &settings_item,
                     &PredefinedMenuItem::separator(),
                     &quit,
@@ -291,6 +294,16 @@ pub fn run() {
                     if state.delegates.forget(&id) {
                         tracing::info!(%id, "delegate forgotten from the menu");
                     }
+                }
+            }
+            Event::UserEvent(UserEvent::Menu(e)) if e.id == dashboard_id => {
+                let state = current.lock().unwrap().state.clone();
+                match state {
+                    Some(state) => open_in_browser(&format!(
+                        "http://127.0.0.1:{}/_ts/dashboard",
+                        state.config.port
+                    )),
+                    None => tracing::warn!("delegate is not running; no dashboard to open"),
                 }
             }
             Event::UserEvent(UserEvent::Menu(e)) if e.id == settings_id => match &settings_window {
@@ -449,6 +462,18 @@ fn save_and_restart(
 }
 
 /// Watch the delegate and tell the UI thread whenever the picture changes.
+/// Open `url` in the default browser.
+fn open_in_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open").arg(url).spawn();
+    // `explorer <url>` hands it to the default browser without a console window.
+    #[cfg(target_os = "windows")]
+    let result = std::process::Command::new("explorer").arg(url).spawn();
+    if let Err(e) = result {
+        tracing::error!(error = %e, url, "cannot open the dashboard");
+    }
+}
+
 fn spawn_poller(current: Shared, proxy: EventLoopProxy<UserEvent>) {
     std::thread::spawn(move || {
         let mut last: Option<Snapshot> = None;
