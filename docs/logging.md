@@ -56,6 +56,46 @@ refusals and the average time to first byte, the count of requests turned away
 metrics only, never content. `tokenshare delegates` prints the delegates this
 machine knows about.
 
+## Metrics
+
+`GET /_ts/metrics` serves the same information in the Prometheus text format, for
+Prometheus, Grafana Agent, the Datadog agent's OpenMetrics check and similar. It
+lives under `/_ts/` because every other path is ollama's. A scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: tokenshare
+    metrics_path: /_ts/metrics
+    static_configs:
+      - targets: ["gpu-box:11343", "laptop:11343"]
+```
+
+| Metric | Type | Labels | |
+| --- | --- | --- | --- |
+| `tokenshare_info` | gauge | `id`, `version` | always 1 |
+| `tokenshare_state` | gauge | `state` | 1 for the current state (`active`, `in-use`, `no-models`, `down`) |
+| `tokenshare_draining`, `tokenshare_sharing` | gauge | | 0 or 1 |
+| `tokenshare_pool_slots`, `tokenshare_pool_slots_in_use` | gauge | | local ollama slots |
+| `tokenshare_forwarding` | gauge | | requests being forwarded to peers |
+| `tokenshare_ollama_up`, `_models`, `_loaded_models` | gauge | `host` | per local ollama host |
+| `tokenshare_peers` | gauge | `status` | known peers by status |
+| `tokenshare_peer_up` | gauge | `peer`, `id` | 1 if online |
+| `tokenshare_peer_models`, `_loaded_models`, `_slots`, `_slots_busy` | gauge | `peer` | as the peer last published them |
+| `tokenshare_peer_last_seen_timestamp_seconds` | gauge | `peer` | the peer's own clock |
+| `tokenshare_upstream_inflight` | gauge | `target` | this delegate's requests in flight per upstream |
+| `tokenshare_upstream_responses_total` | counter | `route`, `target`, `result` | finished responses; `result` is `ok`, `error_status` or the stream problem (`no_final_chunk`, `upstream_error`, `cut_off`, `client_left_early`) |
+| `tokenshare_upstream_refusals_total` | counter | `target`, `reason` | `declined` or `unreachable` before streaming |
+| `tokenshare_requests_rejected_total` | counter | `reason` | `busy` (503) or `not_found` (404) |
+| `tokenshare_response_ttfb_seconds` | histogram | `route`, `target` | request to response headers |
+| `tokenshare_response_duration_seconds` | histogram | `route`, `target` | request to end of stream |
+| `tokenshare_tokens_total` | counter | `model`, `kind` | `prompt` and `completion` tokens from final chunks |
+
+`route` is `local`, `peer` or `passthrough`; `target` is an ollama host or a peer's
+URL. Counters start at zero when the delegate starts. Each delegate reports only
+its own view, so scrape every delegate: a request forwarded from C to A shows up as
+`route="peer"` on C and `route="local"` on A. Like everything else here, there is
+no authentication: anyone who can reach the port can scrape it.
+
 ## Dashboard
 
 `http://<delegate>:11343/_ts/dashboard` is a page that polls `/_ts/status` every

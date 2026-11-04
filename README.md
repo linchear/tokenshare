@@ -155,8 +155,9 @@ WARN response model="qwen3:14b" route="peer" outcome="complete" problem="no_fina
 ```
 
 `GET /_ts/status` returns the delegate's state, table and recent activity as JSON,
-and `/_ts/dashboard` shows the same as a live page (the tray app's **Open
-Dashboard**). See [Logging](docs/logging.md).
+`/_ts/dashboard` shows the same as a live page (the tray app's **Open
+Dashboard**), and `/_ts/metrics` exposes it to Prometheus. See
+[Logging](docs/logging.md).
 
 ## Limitations and security
 

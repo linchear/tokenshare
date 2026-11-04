@@ -2,6 +2,7 @@ pub mod activity;
 pub mod config;
 pub mod daemon;
 pub mod mesh;
+pub mod metrics;
 pub mod ollama;
 pub mod pool;
 pub mod proxy;
