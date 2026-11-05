@@ -153,6 +153,9 @@ struct Inner {
     busy: u64,
     not_found: u64,
     unauthorized: u64,
+    /// Peers that turned away our pool secret (or our lack of one), by URL,
+    /// with when they last did. Cleared when a request to one succeeds.
+    secret_refused: HashMap<String, u64>,
     /// Since start, for metrics. Keyed by (route, target, result).
     results: HashMap<(&'static str, String, &'static str), u64>,
     /// Keyed by (route, target).
@@ -220,6 +223,29 @@ impl Activity {
             Refusal::Declined => t.declined += 1,
             Refusal::Unreachable => t.unreachable += 1,
         }
+    }
+
+    /// `url` answered one of our requests with 401: it wants a pool secret we
+    /// do not have, or ours does not match.
+    pub fn secret_refused_by(&self, url: &str) {
+        let mut g = self.inner.lock().unwrap();
+        g.secret_refused.insert(url.to_string(), now_ms());
+    }
+
+    /// `url` accepted one of our requests, so it accepts our secret.
+    pub fn secret_accepted_by(&self, url: &str) {
+        let mut g = self.inner.lock().unwrap();
+        if !g.secret_refused.is_empty() {
+            g.secret_refused.remove(url);
+        }
+    }
+
+    /// Peers refusing our pool secret, sorted by URL.
+    pub fn secret_refusals(&self) -> Vec<String> {
+        let g = self.inner.lock().unwrap();
+        let mut v: Vec<String> = g.secret_refused.keys().cloned().collect();
+        v.sort();
+        v
     }
 
     pub fn rejected(&self, why: Rejection) {
@@ -401,6 +427,7 @@ impl Activity {
             "targets": targets,
             "rejected": { "busy": g.busy, "not_found": g.not_found, "unauthorized": g.unauthorized },
             "recent": g.recent.iter().rev().collect::<Vec<_>>(),
+            "secret_refused": sorted(&g.secret_refused).into_iter().map(|(u, _)| u).collect::<Vec<_>>(),
         })
     }
 }

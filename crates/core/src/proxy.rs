@@ -24,7 +24,7 @@ use crate::ollama::{model_matches, peer_model_entry, LocalTable};
 use crate::pool::Pool;
 use crate::routing;
 use crate::streamlog::{Kind, Outcome, StreamMeta, StreamTracker};
-use crate::table::DelegateTable;
+use crate::table::{DelegateEntry, DelegateTable};
 
 /// The ollama version reported on `/api/version` when there is no local ollama to
 /// ask (a client-only delegate, or its ollama is down). With one, its answer is
@@ -38,6 +38,31 @@ const MAX_BODY_BYTES: usize = 256 * 1024 * 1024;
 /// that have already handled the request. A delegate receiving it serves the
 /// request itself or rejects it; it never forwards again.
 pub const VISITED_HEADER: &str = "x-tokenshare-visited";
+/// On every response from an ollama: the name of the delegate whose ollama
+/// produced it (its id if it has no name). Set by the delegate the client
+/// talked to, so it is there whatever version the serving peer runs.
+pub const SERVED_BY_HEADER: &str = "x-tokenshare-served-by";
+
+/// `who` as a header value: printable ASCII as is, anything else (a name can
+/// be "Zoë's Mac") percent-encoded as UTF-8, as is `%` itself.
+fn served_by(who: &DelegateEntry) -> HeaderValue {
+    use std::fmt::Write;
+    let text = who.name.as_deref().unwrap_or(&who.id);
+    let mut out = String::with_capacity(text.len());
+    for b in text.bytes() {
+        if (0x20..0x7f).contains(&b) && b != b'%' {
+            out.push(b as char);
+        } else {
+            let _ = write!(out, "%{b:02X}");
+        }
+    }
+    HeaderValue::from_str(&out).unwrap_or(HeaderValue::from_static("unknown"))
+}
+
+fn with_served_by(mut r: Response, who: &DelegateEntry) -> Response {
+    r.headers_mut().insert(SERVED_BY_HEADER, served_by(who));
+    r
+}
 
 /// Endpoints that run a model and so consume a pool slot.
 const INFERENCE_PATHS: &[&str] = &[
@@ -504,11 +529,14 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
             return error(StatusCode::SERVICE_UNAVAILABLE, "no local ollama available");
         };
         return match out.send(format!("{host}{path_and_query}"), None).await {
-            Ok(resp) => stream_response(
-                resp,
-                (),
-                s.cutoff.subscribe(),
-                meta("passthrough", &host, None),
+            Ok(resp) => with_served_by(
+                stream_response(
+                    resp,
+                    (),
+                    s.cutoff.subscribe(),
+                    meta("passthrough", &host, None),
+                ),
+                &s.delegates.self_entry(),
             ),
             Err(e) => {
                 warn!(path, host, error = %e, "ollama request failed");
@@ -575,11 +603,14 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
             return match out.send(format!("{host}{path_and_query}"), None).await {
                 Ok(resp) => {
                     log(host, resp.status().as_u16());
-                    stream_response(
-                        resp,
-                        (permit, flight),
-                        s.cutoff.subscribe(),
-                        meta("local", host, Some(&model)),
+                    with_served_by(
+                        stream_response(
+                            resp,
+                            (permit, flight),
+                            s.cutoff.subscribe(),
+                            meta("local", host, Some(&model)),
+                        ),
+                        &s.delegates.self_entry(),
                     )
                 }
                 Err(e) => {
@@ -615,14 +646,21 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
             {
                 Ok(resp) if resp.status().is_success() => {
                     log(&peer.url, resp.status().as_u16());
-                    return stream_response(
-                        resp,
-                        (guard.take(), flight),
-                        s.cutoff.subscribe(),
-                        meta("peer", &peer.url, Some(&model)),
+                    s.activity.secret_accepted_by(&peer.url);
+                    return with_served_by(
+                        stream_response(
+                            resp,
+                            (guard.take(), flight),
+                            s.cutoff.subscribe(),
+                            meta("peer", &peer.url, Some(&model)),
+                        ),
+                        &peer,
                     );
                 }
                 Ok(resp) => {
+                    if resp.status() == StatusCode::UNAUTHORIZED {
+                        s.activity.secret_refused_by(&peer.url);
+                    }
                     s.activity.refused(&peer.url, Refusal::Declined);
                     info!(peer = %peer.url, status = resp.status().as_u16(), "peer declined, trying next")
                 }

@@ -43,6 +43,12 @@ this is called out below.
   different builds (`differing_models` in `/_ts/status`).
 - **Forget from the dashboard.** Opened on the delegate's own machine, the
   dashboard has a *Forget* button for each peer.
+- **`X-Tokenshare-Served-By`** on every response an ollama produced: the name of
+  the delegate that ran the request.
+- **Tray notifications** when a delegate goes offline (after a minute), comes
+  back or joins, when a peer refuses this machine's pool secret, and when the
+  delegate cannot start. `notifications = false` or Settings turns them off. The
+  dashboard tags a peer that refuses the secret.
 
 ### Changed
 

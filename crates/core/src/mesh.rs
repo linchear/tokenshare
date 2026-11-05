@@ -201,11 +201,16 @@ pub async fn table(State(s): State<Arc<AppState>>) -> Json<TableResponse> {
 // ---- client side ----
 
 /// A peer's reply, with a clear error when it turned us away for the secret.
-fn accepted(r: reqwest::Response, url: &str) -> Result<reqwest::Response> {
+/// `r` if it is a success. A 401 means `url` refuses our pool secret, which is
+/// recorded so the dashboard and the tray can say so.
+fn accepted(s: &AppState, r: reqwest::Response, url: &str) -> Result<reqwest::Response> {
     if r.status() == reqwest::StatusCode::UNAUTHORIZED {
+        s.activity.secret_refused_by(url);
         bail!("{url} refused us: it needs the pool secret, or ours does not match");
     }
-    Ok(r.error_for_status()?)
+    let r = r.error_for_status()?;
+    s.activity.secret_accepted_by(url);
+    Ok(r)
 }
 
 /// Tell every other delegate about `entry`.
@@ -234,7 +239,7 @@ async fn announce_new_member(s: Arc<AppState>, entry: DelegateEntry) {
                 .send()
                 .await
                 .map_err(anyhow::Error::from)
-                .and_then(|r| accepted(r, &p.url));
+                .and_then(|r| accepted(s, r, &p.url));
             if let Err(e) = r {
                 warn!(peer = %p.url, error = %e, "announce failed");
                 s.delegates.set_status(&p.id, Status::Unavailable);
@@ -251,7 +256,7 @@ pub async fn pull_table(s: &AppState, url: &str) -> Result<()> {
         .timeout(COORD_TIMEOUT)
         .send()
         .await?;
-    let resp: TableResponse = accepted(resp, url)?.json().await?;
+    let resp: TableResponse = accepted(s, resp, url)?.json().await?;
     s.delegates.merge(resp.table);
     Ok(())
 }
@@ -273,7 +278,7 @@ pub async fn join_via(s: &AppState, url: &str) -> Result<()> {
         .json(&req)
         .send()
         .await?;
-    let resp: TableResponse = accepted(resp, url)?.json().await?;
+    let resp: TableResponse = accepted(s, resp, url)?.json().await?;
     let joined_as = resp
         .joined_as
         .ok_or_else(|| anyhow!("join reply had no self entry"))?;
@@ -379,7 +384,7 @@ async fn post_keepalive(s: &AppState, peer: &DelegateEntry, msg: &Keepalive) -> 
         .send()
         .await
         .map_err(anyhow::Error::from)
-        .and_then(|r| accepted(r, &peer.url));
+        .and_then(|r| accepted(s, r, &peer.url));
     match r {
         Ok(_) => true,
         Err(e) => {

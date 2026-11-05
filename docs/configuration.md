@@ -23,6 +23,7 @@ pool_size = 3
 | `shared_models` | all | The models other delegates may use, e.g. `["qwen3", "llama3.2:1b"]` ([see below](#lending-limits)) |
 | `pool_secret` | none | Shared secret every delegate in the pool must use ([see below](#pool-secret)). The `TOKENSHARE_POOL_SECRET` environment variable overrides it |
 | `trust_localhost` | `true` | With a `pool_secret`, let connections from this machine in without it |
+| `notifications` | `true` | Tray app only: desktop notifications ([see below](#notifications)) |
 | `poll_interval_secs` | `10` | How often to refresh local models |
 | `rejoin_retry_secs` | `300` | Wait before retrying when no delegate answered |
 | `keepalive_interval_secs` | `30` | Keepalive period |
@@ -232,12 +233,30 @@ usage and the delegate list. Quit waits up to 5 seconds for in-flight requests.
 **Settings.** Choose *Settings…* in the tray menu to edit the name, the first
 contact, ollama hosts (one per line), whether to share your ollama and its
 [lending limits](#lending-limits), the pool secret, connections to ollama, listen
-port and, under Advanced, the advertise URL and ollama port. *Save & Restart* validates the values,
+port, notifications and, under Advanced, the advertise URL and ollama port. *Save & Restart* validates the values,
 writes the config file and restarts the delegate with them; requests in flight get a
 few seconds to finish. Other options (intervals, TTL, grace period) are kept as they
 are in the file, so edit it directly for those. On macOS the app shows a Dock icon
 while the window is open. The window needs WebView2 on Windows (included in Windows
 11 and current Windows 10).
+
+### Notifications
+
+The tray app shows a desktop notification when:
+
+- a delegate it has seen online since starting **goes offline** and stays offline
+  for a minute (a missed keepalive alone is not reported), and again when it
+  **comes back**;
+- a new delegate **joins** the pool;
+- a peer **refuses this machine's pool secret** (it answered 401; requests are not
+  sent there until it accepts it again);
+- the delegate **cannot start**, for example because its port is in use.
+
+Delegates coming and going are not reported for the first minute after the
+delegate starts, while it rejoins the pool. Several at once are grouped into one
+notification. Turn them off with *Notify me…* in Settings or `notifications =
+false`. On macOS they appear as Token Share's only when run from the app bundle,
+and the first one may ask for permission.
 
 `GET /_ts/status` returns the same picture as JSON: `name`, `state`, `draining`,
 `pool` (including `peer_limit` and `peer_in_use`), `shared_models`, local ollama

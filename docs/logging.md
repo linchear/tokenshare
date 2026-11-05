@@ -108,9 +108,11 @@ scrape it; with one, a scraper on another machine needs the secret (above).
 `http://<delegate>:11343/_ts/dashboard` is a page that polls `/_ts/status` every
 two seconds and shows the delegates with their slots and warm models, the local
 ollama hosts, and recent responses with how they ended. Hovering over a model
-shows its parameter size, quantization, size and digest; a model marked **≠** is
-one that delegates have in different builds (also in `/_ts/status` as
-`differing_models`), so the answer can depend on which machine serves it. The tray app opens it from
+shows its parameter size, quantization, size and digest. A model marked **≠** is
+one that delegates have in different builds (`differing_models` in
+`/_ts/status`), so the answer can depend on which machine serves it. A peer
+tagged **refuses our secret** answered one of this delegate's requests with 401
+(`activity.secret_refused` in `/_ts/status`). The tray app opens it from
 **Open Dashboard**. It needs no internet access, and it shows only what
 `/_ts/status` does. With a [pool secret](configuration.md#pool-secret), opening it
 from another machine asks for the secret, which is kept for that browser tab

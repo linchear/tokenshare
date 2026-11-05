@@ -4,7 +4,7 @@
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use tokenshare_core::mesh::{pull_table, rejoin, send_keepalive};
-use tokenshare_core::proxy::VISITED_HEADER;
+use tokenshare_core::proxy::{SERVED_BY_HEADER, VISITED_HEADER};
 
 mod common;
 use common::{eventually, node, Node, NodeOpts};
@@ -258,4 +258,37 @@ async fn the_dashboard_page_has_the_forget_controls() {
         .unwrap();
     assert!(page.contains("/_ts/forget"));
     assert!(page.contains("data-forget"));
+}
+
+#[tokio::test]
+async fn responses_say_which_machine_served_them() {
+    let a = node(NodeOpts {
+        models: &["gemma2:latest"],
+        name: Some("Zoë's 100% box"),
+        ..Default::default()
+    })
+    .await;
+    let c = client_of(&a).await;
+    let served_by =
+        |r: &reqwest::Response| r.headers()[SERVED_BY_HEADER].to_str().unwrap().to_string();
+    // Non-ASCII and `%` are percent-encoded, so any client can read it.
+    let want = "Zo%C3%AB's 100%25 box";
+
+    let r = chat(&a.url, "gemma2").await;
+    assert_eq!(served_by(&r), want, "served here");
+    r.text().await.unwrap();
+    let r = chat(&c.url, "gemma2").await;
+    assert_eq!(served_by(&r), want, "served by the peer");
+    r.text().await.unwrap();
+
+    // A delegate without a name is identified by its id.
+    a.state.delegates.set_self_name(None);
+    let r = chat(&a.url, "gemma2").await;
+    assert_eq!(served_by(&r), a.state.id);
+    r.text().await.unwrap();
+
+    // Errors that no ollama produced carry none.
+    let r = chat(&c.url, "nobody-has-this").await;
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    assert!(r.headers().get(SERVED_BY_HEADER).is_none());
 }
