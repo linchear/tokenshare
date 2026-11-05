@@ -186,6 +186,7 @@ async fn a_new_delegate_joins_an_old_one_gossips_and_borrows_its_models() {
     assert_eq!(seen[0].models, vec!["gemma2:latest".to_string()]);
     assert_eq!((seen[0].slots, seen[0].busy), (None, None));
     assert!(seen[0].loaded.is_empty());
+    assert_eq!(seen[0].name, None, "nor a name");
 
     // Its keepalive, load fields and all, parses as v0.1.0's keepalive.
     assert!(send_keepalive(&new.state).await);
@@ -210,6 +211,7 @@ async fn a_new_delegate_joins_an_old_one_gossips_and_borrows_its_models() {
 async fn an_old_delegate_can_join_a_new_one_and_read_its_table() {
     let new = node(NodeOpts {
         models: &["gemma2:latest"],
+        name: Some("new-one"),
         ..Default::default()
     })
     .await;
@@ -251,6 +253,7 @@ async fn an_old_delegate_can_join_a_new_one_and_read_its_table() {
         .find(|e| e["id"] == new.state.id.as_str())
         .unwrap();
     assert!(mine["slots"].is_number(), "the new fields are really there");
+    assert_eq!(mine["name"], "new-one");
     let table: OldTable = serde_json::from_value(raw).expect("v0.1.0 can parse the table");
     assert_eq!(table.count, 2);
     // Both versions hash the same table the same way, so announces do not
@@ -290,4 +293,5 @@ async fn an_old_delegate_can_join_a_new_one_and_read_its_table() {
         .unwrap();
     assert_eq!(old_seen.models.len(), 2);
     assert_eq!(old_seen.slots, None);
+    assert_eq!(old_seen.name, None, "v0.1.0 sends no name");
 }

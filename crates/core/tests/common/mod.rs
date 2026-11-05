@@ -263,6 +263,12 @@ pub struct NodeOpts<'a> {
     /// Let connections from this machine in without the secret (default true).
     /// Every test runs on loopback, so tests of the secret turn this off.
     pub trust_localhost: bool,
+    /// The delegate's name; `None` leaves the hostname.
+    pub name: Option<&'a str>,
+    /// `max_peer_requests`.
+    pub max_peer_requests: Option<usize>,
+    /// `shared_models`; empty shares everything.
+    pub shared_models: &'a [&'a str],
 }
 
 impl Default for NodeOpts<'_> {
@@ -279,6 +285,9 @@ impl Default for NodeOpts<'_> {
             client_only: false,
             secret: None,
             trust_localhost: true,
+            name: None,
+            max_peer_requests: None,
+            shared_models: &[],
         }
     }
 }
@@ -302,6 +311,9 @@ pub async fn node(opts: NodeOpts<'_>) -> Node {
         keepalive_interval_secs: opts.keepalive_interval_secs.unwrap_or(30),
         pool_secret: opts.secret.map(str::to_string),
         trust_localhost: opts.trust_localhost,
+        name: opts.name.map(str::to_string),
+        max_peer_requests: opts.max_peer_requests,
+        shared_models: opts.shared_models.iter().map(|m| m.to_string()).collect(),
         ..Config::default()
     };
     let state = AppState::new(opts.id.unwrap_or_else(uuid_like), config, opts.data_dir);

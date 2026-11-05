@@ -67,9 +67,14 @@ pub fn render(s: &AppState) -> String {
         "gauge",
         "Always 1; labels identify the delegate and its version.",
     );
+    let name = s.delegates.self_entry().name.unwrap_or_default();
     m.sample(
         "tokenshare_info",
-        &[("id", &s.id), ("version", env!("CARGO_PKG_VERSION"))],
+        &[
+            ("id", &s.id),
+            ("name", &name),
+            ("version", env!("CARGO_PKG_VERSION")),
+        ],
         1,
     );
 
@@ -121,6 +126,22 @@ pub fn render(s: &AppState) -> String {
         "Local ollama slots in use.",
     );
     m.sample("tokenshare_pool_slots_in_use", &[], s.pool.in_use());
+    m.family(
+        "tokenshare_pool_peer_slots",
+        "gauge",
+        "How many of the local slots other delegates may use at once (max_peer_requests).",
+    );
+    m.sample("tokenshare_pool_peer_slots", &[], s.pool.peer_size());
+    m.family(
+        "tokenshare_pool_peer_slots_in_use",
+        "gauge",
+        "Local slots in use by other delegates' requests.",
+    );
+    m.sample(
+        "tokenshare_pool_peer_slots_in_use",
+        &[],
+        s.pool.peer_in_use(),
+    );
     m.family(
         "tokenshare_forwarding",
         "gauge",
@@ -186,6 +207,22 @@ pub fn render(s: &AppState) -> String {
             "tokenshare_peer_up",
             &[("peer", &p.url), ("id", &p.id)],
             flag(p.status == Status::Online),
+        );
+    }
+    m.family(
+        "tokenshare_peer_info",
+        "gauge",
+        "Always 1; labels give the peer's name, which can change and need not be unique.",
+    );
+    for p in &peers {
+        m.sample(
+            "tokenshare_peer_info",
+            &[
+                ("peer", &p.url),
+                ("id", &p.id),
+                ("name", p.name.as_deref().unwrap_or_default()),
+            ],
+            1,
         );
     }
     m.family(

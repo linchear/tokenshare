@@ -54,6 +54,9 @@ struct Current {
 
 type Shared = Arc<Mutex<Current>>;
 
+/// Width of the settings window in logical pixels; its height follows the content.
+const SETTINGS_WIDTH: f64 = 580.0;
+
 struct SettingsWindow {
     // The webview must be dropped before its window.
     webview: WebView,
@@ -97,9 +100,13 @@ fn snapshot(current: &Shared) -> Snapshot {
             } else {
                 p.models.join(", ")
             };
+            let who = match &p.name {
+                Some(name) => format!("{name}  {}", p.url),
+                None => p.url.clone(),
+            };
             PeerRow {
                 id: p.id.clone(),
-                label: format!("{}  ({st})  {models}", p.url),
+                label: format!("{who}  ({st})  {models}"),
             }
         })
         .collect();
@@ -340,10 +347,17 @@ pub fn run() {
                         }
                     }
                     Ok(Message::Resize { height }) => {
-                        // Title bar is outside the inner size; clamp to something sane.
-                        let h = height.clamp(300.0, 900.0);
+                        // Fit the content, but stay on screen: the title bar and
+                        // menu bar or taskbar are outside the inner size.
+                        let max = w
+                            .window
+                            .current_monitor()
+                            .map(|m| m.size().to_logical::<f64>(m.scale_factor()).height - 90.0)
+                            .unwrap_or(900.0)
+                            .max(300.0);
+                        let h = height.clamp(300.0, max);
                         w.window
-                            .set_inner_size(tao::dpi::LogicalSize::new(460.0, h));
+                            .set_inner_size(tao::dpi::LogicalSize::new(SETTINGS_WIDTH, h));
                     }
                     Ok(Message::Paste) => {
                         let text = arboard::Clipboard::new()
@@ -519,7 +533,7 @@ fn open_settings(
     set_regular_app(target, true);
     let window = WindowBuilder::new()
         .with_title("Token Share Settings")
-        .with_inner_size(tao::dpi::LogicalSize::new(460.0, 500.0))
+        .with_inner_size(tao::dpi::LogicalSize::new(SETTINGS_WIDTH, 500.0))
         .with_resizable(false)
         .build(target)
         .map_err(|e| {

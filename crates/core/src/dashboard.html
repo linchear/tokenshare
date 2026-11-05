@@ -68,6 +68,11 @@
   #login form { display: flex; gap: 8px; flex-wrap: wrap; }
   #login input { flex: 1; min-width: 200px; padding: 6px 8px; font: inherit; color: var(--text);
                  background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+  .act { font: inherit; font-size: 12px; padding: 2px 10px; border-radius: 6px; cursor: pointer;
+         border: 1px solid var(--line); background: var(--panel); color: var(--text); }
+  .act:hover { border-color: var(--red); color: var(--red); }
+  .act:disabled { opacity: .5; cursor: default; }
+  .name { font-weight: 600; }
   #login button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--blue);
                   background: var(--blue); color: #fff; cursor: pointer; }
 </style>
@@ -100,6 +105,7 @@
       <span class="chip warm">warm</span> models are loaded in memory and start without a load.
       The request columns are this delegate's own traffic to that peer; a peer that just refused a request
       is <span class="tag cool">cooling</span> and gets tried after the others for a few seconds.
+      <span id="forget-help"></span>
     </div>
   </section>
 
@@ -138,6 +144,8 @@ function time(ms) {
   return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 function short(id) { return String(id || "").slice(0, 8); }
+// What to call a delegate: its name, else its address.
+function who(d) { return d ? d.name || host(d.url) : "–"; }
 function host(url) { try { return new URL(url).host; } catch { return url || "–"; } }
 function matches(req, avail) { return req === avail || (!req.includes(":") && avail === req + ":latest"); }
 function pill(state, label) {
@@ -171,7 +179,7 @@ function render(s) {
   const peers = delegates.filter((d) => d.id !== s.id);
 
   $("state").outerHTML = `<span id="state">${pill(s.state, STATE_LABEL[s.state] || s.state)}</span>`;
-  $("who").textContent = `delegate ${short(s.id)}${self ? " · " + host(self.url) : ""} · v${s.version || "?"}`
+  $("who").textContent = `${s.name ? s.name + " · " : ""}delegate ${short(s.id)}${self ? " · " + host(self.url) : ""} · v${s.version || "?"}`
     + (s.draining ? " · shutting down" : "") + (s.sharing ? "" : " · not sharing")
     + (s.auth ? " · secret required" : "");
   $("updated").textContent = "updated " + time(Date.now());
@@ -190,7 +198,9 @@ function render(s) {
   const rej = act.rejected || {};
   const denied = rej.unauthorized || 0;
   $("tiles").innerHTML = [
-    tile("Local slots", `${s.pool.in_use} / ${s.pool.size}`, `${s.pool.forwarding} forwarded to peers`),
+    tile("Local slots", `${s.pool.in_use} / ${s.pool.size}`, `${s.pool.forwarding} forwarded to peers`
+      + (s.sharing && s.pool.peer_limit != null && s.pool.peer_limit < s.pool.size
+        ? ` · peers ${s.pool.peer_in_use} / ${s.pool.peer_limit}` : "")),
     tile("Delegates online", `${online.length + 1} / ${peers.length + 1}`, "including this one"),
     tile("Models in the pool", pool.size, `${warm.size} warm`),
     tile("Recent problems", `<span class="${problems ? "warn" : ""}">${problems}</span>`, `of the last ${recent.length} responses`),
@@ -201,28 +211,39 @@ function render(s) {
   // Delegates: this one first, then online peers, then the rest.
   const order = { online: 0, unavailable: 1, inactive: 2 };
   const rows = [...(self ? [self] : []), ...peers.sort((a, b) =>
-    (order[a.status] - order[b.status]) || a.url.localeCompare(b.url))];
+    (order[a.status] - order[b.status]) || who(a).localeCompare(who(b)) || a.url.localeCompare(b.url))];
+  // Models on this machine that peers are not offered (shared_models).
+  const local = new Set();
+  (s.ollama || []).filter((h) => h.up).forEach((h) => h.models.forEach((m) => local.add(m)));
+  const kept = s.sharing && self ? [...local].filter((m) => !(self.models || []).includes(m)).length : 0;
+  const manage = !!s.manage;
+  $("forget-help").textContent = manage
+    ? "Forget drops a delegate from this machine's table, for one that is gone for good; it comes back if it is heard from again."
+    : "";
   $("delegates").innerHTML = `<thead><tr>
       <th>Delegate</th><th>Status</th><th>Slots</th><th>Models</th><th>Last seen</th>
       <th class="num">In flight</th><th class="num">OK</th><th class="num">Problems</th>
-      <th class="num">Refused</th><th class="num">Avg first byte</th></tr></thead><tbody>` +
+      <th class="num">Refused</th><th class="num">Avg first byte</th>${manage ? "<th></th>" : ""}</tr></thead><tbody>` +
     (rows.length ? rows.map((d) => {
       const me = d.id === s.id;
       const t = byTarget[d.url] || {};
       const refused = (t.declined || 0) + (t.unreachable || 0);
+      const limited = me && s.sharing && s.pool.peer_limit != null && s.pool.peer_limit < s.pool.size;
       return `<tr>
-        <td><div class="mono">${esc(host(d.url))}${me ? '<span class="tag">this delegate</span>' : ""}${t.cooling ? '<span class="tag cool">cooling</span>' : ""}</div>
-            <div class="muted mono">${esc(short(d.id))}</div></td>
+        <td><div>${d.name ? `<span class="name">${esc(d.name)}</span>` : `<span class="mono">${esc(host(d.url))}</span>`}${me ? '<span class="tag">this delegate</span>' : ""}${t.cooling ? '<span class="tag cool">cooling</span>' : ""}</div>
+            <div class="muted mono">${d.name ? esc(host(d.url)) + " · " : ""}${esc(short(d.id))}</div></td>
         <td>${pill(d.status)}</td>
-        <td>${me ? meter(s.pool.in_use, s.sharing ? s.pool.size : null) : meter(d.busy, d.slots)}</td>
-        <td>${chips(d.models, d.loaded)}</td>
+        <td>${me ? meter(s.pool.in_use, s.sharing ? s.pool.size : null) : meter(d.busy, d.slots)}${limited
+          ? `<div class="muted" title="max_peer_requests">peers ≤ ${s.pool.peer_limit}</div>` : ""}</td>
+        <td>${chips(d.models, d.loaded)}${me && kept ? `<div class="muted" title="shared_models">${kept} more not shared</div>` : ""}</td>
         <td class="muted">${me ? "now" : ago(now - d.last_seen)}</td>
         <td class="num">${me ? "–" : t.inflight ?? 0}</td>
         <td class="num">${me ? "–" : t.ok ?? 0}</td>
         <td class="num ${t.problems ? "warn" : ""}">${me ? "–" : t.problems ?? 0}</td>
         <td class="num ${refused ? "warn" : ""}" title="${t.declined || 0} declined, ${t.unreachable || 0} unreachable">${me ? "–" : refused}</td>
-        <td class="num">${me ? "–" : dur(t.ttfb_ms_avg)}</td></tr>`;
-    }).join("") : '<tr><td colspan="10" class="empty">This delegate does not know its own address yet; it learns it when it joins or is joined.</td></tr>') +
+        <td class="num">${me ? "–" : dur(t.ttfb_ms_avg)}</td>${manage ? `<td>${me ? ""
+          : `<button class="act" data-forget="${esc(d.id)}" data-who="${esc(who(d))}" data-status="${esc(d.status)}">Forget</button>`}</td>` : ""}</tr>`;
+    }).join("") : '<tr><td colspan="11" class="empty">This delegate does not know its own address yet; it learns it when it joins or is joined.</td></tr>') +
     "</tbody>";
 
   // Local ollama hosts.
@@ -243,7 +264,7 @@ function render(s) {
   // Recent responses.
   const label = (url) => {
     const d = delegates.find((x) => x.url === url);
-    return d ? host(url) : url;
+    return d ? who(d) : url;
   };
   $("recent").innerHTML = recent.length ? `<thead><tr><th>Time</th><th>Model</th><th>Endpoint</th><th>Served by</th>
       <th class="num">Status</th><th>Outcome</th><th class="num">First byte</th><th class="num">Total</th><th class="num">Tokens in / out</th></tr></thead><tbody>` +
@@ -275,6 +296,33 @@ function askForSecret(wrong) {
   $("secret").focus();
 }
 
+function authHeaders() { return secret ? { Authorization: "Bearer " + secret } : {}; }
+
+// Forget buttons are redrawn on every poll, so listen on the table.
+$("delegates").addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-forget]");
+  if (!b) return;
+  const name = b.dataset.who;
+  const back = b.dataset.status === "online"
+    ? `${name} is online, so it will be back with its next keepalive. Forget is for delegates that are gone for good.`
+    : "It stays out of this machine's table until it is heard from again.";
+  if (!confirm(`Forget ${name}?\n\n${back}`)) return;
+  b.disabled = true;
+  try {
+    const r = await fetch("/_ts/forget", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ id: b.dataset.forget }),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.error || "status " + r.status);
+    b.closest("tr").remove();
+  } catch (err) {
+    b.disabled = false;
+    alert(`Could not forget ${name}: ${err.message}`);
+  }
+});
+
 $("login-form").addEventListener("submit", (e) => {
   e.preventDefault();
   secret = $("secret").value.trim();
@@ -285,8 +333,7 @@ $("login-form").addEventListener("submit", (e) => {
 
 async function poll() {
   try {
-    const headers = secret ? { Authorization: "Bearer " + secret } : {};
-    const r = await fetch("/_ts/status", { cache: "no-store", headers });
+    const r = await fetch("/_ts/status", { cache: "no-store", headers: authHeaders() });
     if (r.status === 401) {
       // Stop polling until a secret is entered.
       askForSecret(!!secret);

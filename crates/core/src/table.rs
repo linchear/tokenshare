@@ -27,6 +27,11 @@ pub struct DelegateEntry {
     pub status: Status,
     #[serde(rename = "type")]
     pub kind: String,
+    /// A name for people: the machine's hostname unless configured. Not
+    /// unique and not used for routing; the id is what identifies a delegate.
+    /// Absent from delegates that predate names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub models: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub load: Option<f32>,
@@ -63,6 +68,7 @@ impl DelegateEntry {
             url,
             status: Status::Online,
             kind: "delegate".into(),
+            name: None,
             models,
             load: None,
             vram: None,
@@ -73,6 +79,22 @@ impl DelegateEntry {
             last_seen: now_ms(),
         }
     }
+}
+
+/// Longest delegate name kept, in characters.
+pub const MAX_NAME_CHARS: usize = 40;
+
+/// `raw` made safe to show anywhere (a terminal, a menu, a web page): control
+/// characters dropped, runs of whitespace collapsed, at most
+/// [`MAX_NAME_CHARS`] characters. `None` if nothing is left.
+pub fn clean_name(raw: &str) -> Option<String> {
+    let words: Vec<&str> = raw
+        .split(|c: char| c.is_whitespace() || c.is_control())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let name: String = words.join(" ").chars().take(MAX_NAME_CHARS).collect();
+    let name = name.trim_end().to_string();
+    (!name.is_empty()).then_some(name)
 }
 
 /// Where forgotten delegates are kept, next to the table file.
@@ -217,6 +239,12 @@ impl DelegateTable {
         self.persist();
     }
 
+    /// Set the name we show to peers. Travels with the next keepalive.
+    pub fn set_self_name(&self, name: Option<String>) {
+        let mut g = self.inner.write().unwrap();
+        g.get_mut(&self.self_id).unwrap().name = name;
+    }
+
     /// Publish our current capacity and warm models. Does not bump `last_seen`:
     /// these change constantly, and travel with the next keepalive or table pull.
     /// Not persisted either, since they mean nothing after a restart.
@@ -281,10 +309,12 @@ impl DelegateTable {
         {
             let mut g = self.inner.write().unwrap();
             let mut forgotten = self.forgotten.write().unwrap();
-            for e in entries {
+            for mut e in entries {
                 if e.url.is_empty() {
                     continue;
                 }
+                // Names come from other machines and end up in terminals and menus.
+                e.name = e.name.as_deref().and_then(clean_name);
                 if e.id != self.self_id {
                     // Too old to be alive, or forgotten and not heard from since.
                     if self.expired(e.last_seen) {
@@ -423,6 +453,39 @@ mod tests {
         assert_eq!(t.peers()[0].models, vec!["m".to_string()]);
         assert!(!t.merge([entry("a", 5)]));
         assert_eq!(t.peers()[0].last_seen, 20);
+    }
+
+    #[test]
+    fn names_are_cleaned_to_something_safe_to_show() {
+        assert_eq!(clean_name("gpu-box").as_deref(), Some("gpu-box"));
+        assert_eq!(
+            clean_name("  Living\troom \n  Mac  ").as_deref(),
+            Some("Living room Mac")
+        );
+        assert_eq!(
+            clean_name("evil\u{1b}[31mred").as_deref(),
+            Some("evil [31mred"),
+            "escape sequences cannot reach a terminal"
+        );
+        assert_eq!(clean_name(" \t\u{7} "), None);
+        let long = "x".repeat(100);
+        assert_eq!(clean_name(&long).unwrap().chars().count(), MAX_NAME_CHARS);
+        assert_eq!(
+            clean_name(&"é".repeat(50)).unwrap().chars().count(),
+            MAX_NAME_CHARS,
+            "counts characters, not bytes"
+        );
+
+        // Whatever a peer sends is cleaned on the way in.
+        let t = table();
+        let mut e = entry("a", 10);
+        e.name = Some("\u{7}\u{7}".into());
+        t.merge([e]);
+        assert_eq!(t.peers()[0].name, None);
+        let mut e = entry("a", 11);
+        e.name = Some(" gpu\nbox ".into());
+        t.merge([e]);
+        assert_eq!(t.peers()[0].name.as_deref(), Some("gpu box"));
     }
 
     #[test]

@@ -115,6 +115,9 @@ you will reach for first:
 | `ollama_hosts` | `["http://localhost:11434"]` | ollama instances on this machine; `[]` for a client-only delegate |
 | `pool_size` | `3` | concurrent requests sent to the local ollama |
 | `share_with_peers` | `true` | let others use this machine's ollama |
+| `max_peer_requests` | no limit | how many of those connections others may use at once |
+| `shared_models` | all | which models others may use |
+| `name` | hostname | how this machine is shown to the pool |
 | `masquerade` | `false` | also listen on ollama's port, 11434 |
 | `port` | `11343` | where delegates (and, without masquerade, clients) connect |
 

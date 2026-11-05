@@ -10,6 +10,7 @@ pool_size = 3
 
 | Key | Default | Meaning |
 | --- | --- | --- |
+| `name` | hostname | How this delegate is shown to the pool: dashboards, tray menus, `tokenshare delegates`. Up to 40 characters ([see below](#names)) |
 | `port` | `11343` | Port for ollama and coordination traffic |
 | `masquerade` | `false` | Also listen on `ollama_port` for ollama clients; `port` then serves other delegates only ([see below](#masquerade)) |
 | `ollama_port` | `11434` | The port ollama clients use while masquerading. 11434 is ollama's own, so existing apps need no change. Shown under *Advanced* in Settings |
@@ -18,6 +19,8 @@ pool_size = 3
 | `ollama_hosts` | `["http://localhost:11434"]` | Ollama instances reachable from this machine. Optional: `[]` makes a [client-only](#client-only) delegate |
 | `pool_size` | `3` | Max concurrent requests to ollama |
 | `share_with_peers` | `true` | Let other delegates use this machine's ollama ([see below](#not-sharing)) |
+| `max_peer_requests` | no limit | The most requests from other delegates served at once, out of `pool_size` ([see below](#lending-limits)) |
+| `shared_models` | all | The models other delegates may use, e.g. `["qwen3", "llama3.2:1b"]` ([see below](#lending-limits)) |
 | `pool_secret` | none | Shared secret every delegate in the pool must use ([see below](#pool-secret)). The `TOKENSHARE_POOL_SECRET` environment variable overrides it |
 | `trust_localhost` | `true` | With a `pool_secret`, let connections from this machine in without it |
 | `poll_interval_secs` | `10` | How often to refresh local models |
@@ -46,7 +49,7 @@ tokenshare [OPTIONS] [COMMAND]
 
 Commands:
   delegates   List the delegates this machine knows about
-  forget      Forget a delegate, for example one that is gone for good
+  forget      Forget a delegate (by name, id, id prefix or URL), for example one that is gone for good
 
 Options:
   --config <CONFIG>            Config file (TOML)
@@ -58,6 +61,9 @@ Options:
   --ollama-port <PORT>         Port for ollama clients when masquerading (default 11434)
   --client-only                Use no local ollama; only borrow other delegates'
   --pool-size <N>              Max concurrent ollama connections (default 3)
+  --name <NAME>                How this machine is shown to the pool (default: its hostname)
+  --max-peer-requests <N>      The most requests from other delegates served at once
+  --share-model <MODEL>        A model other delegates may use; repeat for several
 ```
 
 The pool secret is read from the config file or the `TOKENSHARE_POOL_SECRET`
@@ -117,6 +123,47 @@ request with 503 in case a peer's view is stale. Its own users are unaffected:
 requests to it are still served by its local ollama and, failing that, by other
 delegates. The menu shows "(not sharing)" and `/_ts/status` reports
 `"sharing": false`.
+
+## Lending limits
+
+Sharing does not have to be all or nothing. Two settings limit what other
+delegates get from this machine, while its own users keep everything:
+
+```toml
+pool_size = 4
+max_peer_requests = 1            # peers get at most 1 of the 4 connections
+shared_models = ["qwen3", "llama3.2:1b"]
+```
+
+- **`max_peer_requests`** caps how many requests from other delegates run at
+  once. The rest of `pool_size` stays free for this machine's own users. Peers are
+  told how many slots they may use, so they count this delegate as full once their
+  share is taken (or the pool is full) and try someone else first; one that asks
+  anyway gets a 503 and moves on. It must be between 1 and `pool_size`; to lend
+  nothing, turn sharing off instead.
+- **`shared_models`** lists the models peers may use. A name without a tag, such
+  as `qwen3`, covers every tag (`qwen3:8b`, `qwen3:32b`); with a tag, only that
+  one. Other models are not advertised, so they are not in the pool for anyone
+  else, and a forwarded request for one is refused with 503. Empty (the default)
+  shares every model.
+
+In Settings these are *At most, requests from others* and *Models others may
+use*, under the sharing checkbox. The dashboard shows the limit next to this
+delegate's slots, and how many local models are not shared.
+
+## Names
+
+Every delegate has a name for people to read: `name` if set, otherwise the
+machine's hostname without its domain (`gpu-box`, not `gpu-box.local`). It
+travels with joins and keepalives, so a rename reaches the pool within a
+keepalive interval. Names are shown in the dashboard, the tray menu and
+`tokenshare delegates`, and `tokenshare forget` accepts one.
+
+Names are only labels. They need not be unique (the id is what identifies a
+delegate, and an ambiguous name is refused by `forget`), and they play no part in
+routing. A name received from another delegate has control characters removed and
+is cut to 40 characters, so it is safe to show in a terminal or a menu. Delegates
+older than names show their address instead.
 
 ## Pool secret
 
@@ -182,14 +229,16 @@ The icon is a round badge with a symbol, so state does not depend on color alone
 reachable ollama with nothing installed does not count. The menu shows state, pool
 usage and the delegate list. Quit waits up to 5 seconds for in-flight requests.
 
-**Settings.** Choose *Settings…* in the tray menu to edit the first contact, ollama
-hosts (one per line), whether to share your ollama, connections to ollama, listen
-port and, under Advanced, the advertise URL. *Save & Restart* validates the values,
+**Settings.** Choose *Settings…* in the tray menu to edit the name, the first
+contact, ollama hosts (one per line), whether to share your ollama and its
+[lending limits](#lending-limits), the pool secret, connections to ollama, listen
+port and, under Advanced, the advertise URL and ollama port. *Save & Restart* validates the values,
 writes the config file and restarts the delegate with them; requests in flight get a
 few seconds to finish. Other options (intervals, TTL, grace period) are kept as they
 are in the file, so edit it directly for those. On macOS the app shows a Dock icon
 while the window is open. The window needs WebView2 on Windows (included in Windows
 11 and current Windows 10).
 
-`GET /_ts/status` returns the same picture as JSON: `state`, `draining`, `pool`,
-local ollama hosts and the delegate table.
+`GET /_ts/status` returns the same picture as JSON: `name`, `state`, `draining`,
+`pool` (including `peer_limit` and `peer_in_use`), `shared_models`, local ollama
+hosts and the delegate table.

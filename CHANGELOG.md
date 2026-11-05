@@ -29,9 +29,21 @@ this is called out below.
   bearer token; apps on the same machine need no change (`trust_localhost`). The
   dashboard asks for it when opened from another machine.
   ([#3](https://github.com/linchear/tokenshare/pull/3))
+- **Lending limits** for machines that share their ollama: `max_peer_requests`
+  keeps part of `pool_size` free for the machine's own users, and
+  `shared_models` offers peers only some models. Both are in Settings and on the
+  command line (`--max-peer-requests`, `--share-model`).
+- **Delegate names.** Each delegate has a name (`name`, `--name`, or the hostname
+  by default) that travels with its gossip and is shown in the dashboard, the
+  tray menu, `tokenshare delegates` and metrics. `tokenshare forget` accepts one.
+- **Forget from the dashboard.** Opened on the delegate's own machine, the
+  dashboard has a *Forget* button for each peer.
 
 ### Changed
 
+- `/_ts/forget` refuses requests from web pages the delegate did not serve
+  (checked with the `Origin` header), so another site open in a browser on the
+  same machine cannot use it.
 - The tray menu says why the delegate could not start (for example
   "Cannot start: port 11343 is already in use"), and **Open Dashboard** is greyed
   out until it is running.

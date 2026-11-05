@@ -9,6 +9,8 @@ use serde_json::{json, Value};
 #[derive(Debug, Clone, PartialEq)]
 pub struct Row {
     pub id: String,
+    /// Empty if the delegate has no name (it predates names).
+    pub name: String,
     pub url: String,
     pub status: String,
     pub models: Vec<String>,
@@ -67,6 +69,7 @@ impl Client {
                 a.iter()
                     .map(|d| Row {
                         id: d["id"].as_str().unwrap_or_default().to_string(),
+                        name: d["name"].as_str().unwrap_or_default().to_string(),
                         url: d["url"].as_str().unwrap_or_default().to_string(),
                         status: d["status"].as_str().unwrap_or_default().to_string(),
                         models: d["models"]
@@ -105,8 +108,8 @@ impl Client {
     }
 }
 
-/// Find the one delegate `target` names: an id, the start of an id (4+ characters)
-/// or a URL. Ourselves can be listed but not forgotten.
+/// Find the one delegate `target` names: a name (any case), an id, the start of
+/// an id (4+ characters) or a URL. Ourselves can be listed but not forgotten.
 pub fn resolve<'a>(target: &str, me: &str, rows: &'a [Row]) -> Result<&'a Row> {
     let target = target.trim();
     if target.is_empty() {
@@ -116,7 +119,11 @@ pub fn resolve<'a>(target: &str, me: &str, rows: &'a [Row]) -> Result<&'a Row> {
     let lower = target.to_lowercase();
     let exact: Vec<&Row> = rows
         .iter()
-        .filter(|r| r.id == target || r.url.trim_end_matches('/') == url_form)
+        .filter(|r| {
+            r.id == target
+                || r.url.trim_end_matches('/') == url_form
+                || (!r.name.is_empty() && r.name.to_lowercase() == lower)
+        })
         .collect();
     let matches = if exact.is_empty() && lower.len() >= 4 {
         rows.iter()
@@ -134,7 +141,7 @@ pub fn resolve<'a>(target: &str, me: &str, rows: &'a [Row]) -> Result<&'a Row> {
         many => {
             let list: Vec<String> = many
                 .iter()
-                .map(|r| format!("{} {}", short(&r.id), r.url))
+                .map(|r| format!("{} {} {}", short(&r.id), r.name, r.url).replace("  ", " "))
                 .collect();
             Err(anyhow!("\"{target}\" is ambiguous: {}", list.join(", ")))
         }
@@ -160,9 +167,15 @@ fn ago(ms: u64, now_ms: u64) -> String {
 
 /// The `tokenshare delegates` listing.
 pub fn format_table(me: &str, rows: &[Row], now_ms: u64) -> String {
+    let width = rows
+        .iter()
+        .map(|r| r.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(4, 24);
     let mut out = format!(
-        "{:<9} {:<12} {:<10} {:<30} {}\n",
-        "ID", "STATUS", "LAST SEEN", "URL", "MODELS"
+        "{:<9} {:<width$} {:<12} {:<10} {:<30} {}\n",
+        "ID", "NAME", "STATUS", "LAST SEEN", "URL", "MODELS"
     );
     for r in rows {
         let models = if r.id == me {
@@ -172,9 +185,11 @@ pub fn format_table(me: &str, rows: &[Row], now_ms: u64) -> String {
         } else {
             r.models.join(", ")
         };
+        let name = if r.name.is_empty() { "-" } else { &r.name };
         out.push_str(&format!(
-            "{:<9} {:<12} {:<10} {:<30} {}\n",
+            "{:<9} {:<width$} {:<12} {:<10} {:<30} {}\n",
             short(&r.id),
+            name,
             r.status,
             ago(r.last_seen_ms, now_ms),
             r.url,
@@ -202,7 +217,12 @@ pub async fn forget(port: u16, secret: Option<&str>, target: &str) -> Result<()>
     let (me, rows) = client.delegates().await?;
     let row = resolve(target, &me, &rows)?;
     if client.forget(&row.id).await? {
-        println!("Forgot {} ({}).", short(&row.id), row.url);
+        let who = if row.name.is_empty() {
+            short(&row.id).to_string()
+        } else {
+            format!("{} ({})", row.name, short(&row.id))
+        };
+        println!("Forgot {who} at {}.", row.url);
         println!("It stays out until it is heard from again.");
         Ok(())
     } else {
@@ -217,6 +237,7 @@ mod tests {
     fn row(id: &str, url: &str) -> Row {
         Row {
             id: id.into(),
+            name: String::new(),
             url: url.into(),
             status: "online".into(),
             models: vec![],
@@ -259,6 +280,25 @@ mod tests {
     }
 
     #[test]
+    fn resolves_by_name_in_any_case_unless_two_share_it() {
+        let mut r = rows();
+        let me = "83976b11-aaaa";
+        r[3].name = "gpu-box".into();
+        assert_eq!(resolve("GPU-Box", me, &r).unwrap().id, "d44294c0-dddd");
+        r[2].name = "gpu-box".into();
+        let err = resolve("gpu-box", me, &r).unwrap_err().to_string();
+        assert!(
+            err.contains("ambiguous") && err.contains("8bbb9999 gpu-box"),
+            "{err}"
+        );
+        r[0].name = "laptop".into();
+        assert!(resolve("laptop", me, &r)
+            .unwrap_err()
+            .to_string()
+            .contains("cannot forget itself"));
+    }
+
+    #[test]
     fn refuses_what_it_cannot_resolve_safely() {
         let r = rows();
         let me = "83976b11-aaaa";
@@ -285,11 +325,15 @@ mod tests {
     fn the_table_marks_this_delegate_and_shows_ages() {
         let mut r = rows();
         r[1].models = vec!["qwen3:14b".into()];
+        r[1].name = "gpu-box".into();
         let now = 1_792_000_000_000u64;
         r[1].last_seen_ms = now - 30_000;
         r[3].last_seen_ms = now - 3 * 86_400_000;
         let t = format_table("83976b11-aaaa", &r, now);
         assert!(t.starts_with("ID "));
+        assert!(t.contains(" NAME "));
+        assert!(t.contains("gpu-box"));
+        assert!(t.contains(" -  "), "no name");
         assert!(t.contains("(this delegate)"));
         assert!(t.contains("qwen3:14b"));
         assert!(t.contains("30s ago"));

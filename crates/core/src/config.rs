@@ -29,10 +29,21 @@ pub struct Config {
     pub ollama_hosts: Vec<String>,
     /// Max concurrent requests sent to ollama.
     pub pool_size: usize,
+    /// How this delegate is shown to people in the pool (dashboards, menus,
+    /// `tokenshare delegates`). Defaults to the machine's hostname.
+    pub name: Option<String>,
     /// Let other delegates use this machine's ollama. When false it looks down
     /// to them (no models advertised, forwarded requests refused), while this
     /// machine's own users still get local ollama and the rest of the pool.
     pub share_with_peers: bool,
+    /// The most requests from other delegates served at once, out of
+    /// `pool_size`. The rest stay free for this machine's own users. Unset means
+    /// peers may use every slot.
+    pub max_peer_requests: Option<usize>,
+    /// The models other delegates may use, e.g. `["llama3.2", "qwen3:8b"]`. A
+    /// name without a tag covers every tag of that model. Empty (the default)
+    /// shares every model.
+    pub shared_models: Vec<String>,
     /// How often to refresh the local model list.
     pub poll_interval_secs: u64,
     /// Wait before trying to rejoin when no known delegate answered.
@@ -71,7 +82,10 @@ impl Default for Config {
             advertise_url: None,
             ollama_hosts: vec![DEFAULT_OLLAMA_HOST.to_string()],
             pool_size: 3,
+            name: None,
             share_with_peers: true,
+            max_peer_requests: None,
+            shared_models: vec![],
             poll_interval_secs: 10,
             rejoin_retry_secs: 300,
             keepalive_interval_secs: 30,
@@ -139,6 +153,36 @@ impl Config {
         self.share_with_peers
     }
 
+    /// Whether other delegates may use `model` (a full name such as
+    /// `llama3.2:latest`): sharing is on and the model is in `shared_models`,
+    /// or that list is empty.
+    pub fn shares_model(&self, model: &str) -> bool {
+        self.shares_models()
+            && (self.shared_models.is_empty()
+                || self
+                    .shared_models
+                    .iter()
+                    .any(|p| model_pattern_matches(p, model)))
+    }
+
+    /// How many requests from other delegates may run at once.
+    pub fn peer_slots(&self) -> usize {
+        self.max_peer_requests
+            .map_or(self.pool_size, |n| n.min(self.pool_size))
+    }
+
+    /// The name shown to people: `name` if set, else this machine's hostname
+    /// without its domain (`gpu-box`, not `gpu-box.local`).
+    pub fn display_name(&self) -> Option<String> {
+        self.name
+            .as_deref()
+            .and_then(crate::table::clean_name)
+            .or_else(|| {
+                let host = gethostname::gethostname().to_string_lossy().into_owned();
+                crate::table::clean_name(host.split('.').next().unwrap_or(""))
+            })
+    }
+
     /// The pool secret, if one is set (blank counts as unset).
     pub fn secret(&self) -> Option<&str> {
         self.pool_secret
@@ -151,6 +195,11 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         if let Some(s) = self.secret() {
             crate::auth::validate(s).map_err(|e| anyhow::anyhow!("{e} (pool_secret)"))?;
+        }
+        if self.max_peer_requests == Some(0) {
+            anyhow::bail!(
+                "max_peer_requests must be at least 1; to lend nothing, set share_with_peers = false"
+            );
         }
         Ok(())
     }
@@ -210,6 +259,17 @@ impl Config {
                 .with_context(|| format!("restricting {}", tmp.display()))?;
         }
         std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
+    }
+}
+
+/// Whether a `shared_models` entry covers `model`. `qwen3` covers every
+/// `qwen3:<tag>`; `qwen3:8b` covers only itself (`llama3.2:latest` and
+/// `llama3.2` are the same model, as in ollama).
+fn model_pattern_matches(pattern: &str, model: &str) -> bool {
+    let pattern = pattern.trim();
+    match pattern.split_once(':') {
+        Some(_) => crate::ollama::model_matches(model, pattern),
+        None => model.split(':').next() == Some(pattern),
     }
 }
 
@@ -474,6 +534,82 @@ mod tests {
         assert_eq!(mode & 0o777, 0o600);
         assert_eq!(Config::load(&path).unwrap().secret(), Some("s3cret-pool"));
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn shared_models_limit_what_peers_may_use() {
+        let all = Config::default();
+        assert!(
+            all.shares_model("anything:7b"),
+            "empty list shares everything"
+        );
+        let some = Config {
+            shared_models: vec![
+                "qwen3".into(),
+                "llama3.2:latest".into(),
+                " phi4:14b ".into(),
+            ],
+            ..Config::default()
+        };
+        for (model, shared) in [
+            ("qwen3:8b", true),
+            ("qwen3:latest", true),
+            ("qwen3-coder:30b", false),
+            ("llama3.2:latest", true),
+            ("llama3.2:1b", false),
+            ("phi4:14b", true),
+            ("phi4:latest", false),
+            ("mistral:latest", false),
+        ] {
+            assert_eq!(some.shares_model(model), shared, "{model}");
+        }
+        let untagged = Config {
+            shared_models: vec!["llama3.2:latest".into()],
+            ..Config::default()
+        };
+        assert!(untagged.shares_model("llama3.2:latest"));
+        let off = Config {
+            share_with_peers: false,
+            ..some
+        };
+        assert!(!off.shares_model("qwen3:8b"), "not sharing at all wins");
+    }
+
+    #[test]
+    fn peer_slots_never_exceed_the_pool() {
+        assert_eq!(Config::default().peer_slots(), 3);
+        let c = |max| Config {
+            pool_size: 4,
+            max_peer_requests: max,
+            ..Config::default()
+        };
+        assert_eq!(c(Some(1)).peer_slots(), 1);
+        assert_eq!(c(Some(9)).peer_slots(), 4);
+        assert!(c(Some(0))
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("share_with_peers"));
+        let parsed: Config =
+            toml::from_str("max_peer_requests = 2\nshared_models = [\"qwen3\"]").unwrap();
+        assert_eq!(parsed.peer_slots(), 2);
+        assert_eq!(parsed.shared_models, vec!["qwen3"]);
+    }
+
+    #[test]
+    fn the_name_defaults_to_the_hostname_without_its_domain() {
+        let named = Config {
+            name: Some("  Living room  Mac ".into()),
+            ..Config::default()
+        };
+        assert_eq!(named.display_name().as_deref(), Some("Living room Mac"));
+        let host = Config::default().display_name().unwrap_or_default();
+        assert!(!host.contains('.'), "{host}");
+        let blank = Config {
+            name: Some("   ".into()),
+            ..Config::default()
+        };
+        assert_eq!(blank.display_name(), Config::default().display_name());
     }
 
     #[test]
