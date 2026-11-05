@@ -31,6 +31,10 @@ pub struct JoinRequest {
     /// The joiner's name. Delegates that predate names send none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// What the joiner's ollama says about `models`. Delegates that predate
+    /// model info send none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_info: Vec<crate::table::ModelMeta>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -109,6 +113,7 @@ pub async fn join(
         .unwrap_or_else(|| format!("http://{}:{}", fmt_ip(addr.ip()), req.port));
     let mut entry = DelegateEntry::new(req.id, url, req.models);
     entry.name = req.name.as_deref().and_then(crate::table::clean_name);
+    entry.model_info = crate::table::clean_model_info(req.model_info, &entry.models);
     info!(id = %entry.id, url = %entry.url, "delegate joined");
     s.delegates.merge([entry.clone()]);
     tokio::spawn(announce_new_member(s.clone(), entry.clone()));
@@ -260,6 +265,7 @@ pub async fn join_via(s: &AppState, url: &str) -> Result<()> {
         port: s.config.port,
         models: me.models,
         name: me.name,
+        model_info: me.model_info,
     };
     let resp = s
         .to_peer(s.client.post(format!("{url}/_ts/join")))

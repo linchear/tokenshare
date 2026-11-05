@@ -51,6 +51,7 @@
   .chips { display: flex; flex-wrap: wrap; gap: 4px; }
   .chip { background: var(--chip); border-radius: 5px; padding: 1px 6px; font-size: 12px; white-space: nowrap; }
   .chip.warm { background: var(--warm); color: var(--warm-text); }
+  .chip.odd { box-shadow: inset 0 0 0 1px var(--yellow); }
   .meter { width: 90px; height: 6px; background: var(--meter); border-radius: 3px; overflow: hidden; margin-top: 4px; }
   .meter > div { height: 100%; background: var(--blue); }
   .meter.full > div { background: var(--yellow); }
@@ -105,6 +106,7 @@
       <span class="chip warm">warm</span> models are loaded in memory and start without a load.
       The request columns are this delegate's own traffic to that peer; a peer that just refused a request
       is <span class="tag cool">cooling</span> and gets tried after the others for a few seconds.
+      <span id="differ-help"></span>
       <span id="forget-help"></span>
     </div>
   </section>
@@ -153,12 +155,32 @@ function pill(state, label) {
 }
 const STATE_LABEL = { "active": "Active", "in-use": "In use", "no-models": "No models", "down": "Down" };
 
-function chips(models, loaded) {
+function bytes(n) {
+  if (!n) return "";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1000 && i < units.length - 1) { n /= 1000; i++; }
+  return `${n >= 10 || i === 0 ? Math.round(n) : n.toFixed(1)} ${units[i]}`;
+}
+// "8.0B · Q4_0 · 4.7 GB · 365c0bd3c000", from what a delegate published.
+function describe(meta) {
+  if (!meta) return "";
+  const d = meta.details || {};
+  return [d.parameter_size, d.quantization_level, bytes(meta.size), (meta.digest || "").replace(/^sha256:/, "").slice(0, 12)]
+    .filter(Boolean).join(" · ");
+}
+// `info` is the delegate's model_info; `differ` maps a model to the variants
+// other delegates have of it (status.differing_models).
+function chips(models, loaded, info, differ) {
   if (!models || !models.length) return '<span class="muted">none</span>';
   const warm = (m) => (loaded || []).some((l) => matches(m, l) || matches(l, m));
   const sorted = [...models].sort((a, b) => (warm(b) - warm(a)) || a.localeCompare(b));
-  return '<div class="chips">' + sorted.map((m) =>
-    `<span class="chip${warm(m) ? " warm" : ""}">${esc(m)}</span>`).join("") + "</div>";
+  return '<div class="chips">' + sorted.map((m) => {
+    const meta = (info || []).find((i) => i.name === m);
+    const odd = differ && differ.has(m);
+    const title = describe(meta) + (odd ? (meta ? "\n" : "") + "Other delegates have a different build of this model" : "");
+    return `<span class="chip${warm(m) ? " warm" : ""}${odd ? " odd" : ""}"${title ? ` title="${esc(title)}"` : ""}>${esc(m)}${odd ? " ≠" : ""}</span>`;
+  }).join("") + "</div>";
 }
 function meter(busy, slots) {
   if (slots == null) return '<span class="muted">–</span>';
@@ -216,6 +238,12 @@ function render(s) {
   const local = new Set();
   (s.ollama || []).filter((h) => h.up).forEach((h) => h.models.forEach((m) => local.add(m)));
   const kept = s.sharing && self ? [...local].filter((m) => !(self.models || []).includes(m)).length : 0;
+  const differing = s.differing_models || [];
+  const differ = new Set(differing.map((x) => x.model));
+  $("differ-help").textContent = differing.length
+    ? `≠ marks a model that delegates have in different builds (${differing.map((x) => x.model).join(", ")}): `
+      + "requests for it can get different answers depending on which machine serves them. Pull it again on each machine to match."
+    : "";
   const manage = !!s.manage;
   $("forget-help").textContent = manage
     ? "Forget drops a delegate from this machine's table, for one that is gone for good; it comes back if it is heard from again."
@@ -235,7 +263,7 @@ function render(s) {
         <td>${pill(d.status)}</td>
         <td>${me ? meter(s.pool.in_use, s.sharing ? s.pool.size : null) : meter(d.busy, d.slots)}${limited
           ? `<div class="muted" title="max_peer_requests">peers ≤ ${s.pool.peer_limit}</div>` : ""}</td>
-        <td>${chips(d.models, d.loaded)}${me && kept ? `<div class="muted" title="shared_models">${kept} more not shared</div>` : ""}</td>
+        <td>${chips(d.models, d.loaded, d.model_info, differ)}${me && kept ? `<div class="muted" title="shared_models">${kept} more not shared</div>` : ""}</td>
         <td class="muted">${me ? "now" : ago(now - d.last_seen)}</td>
         <td class="num">${me ? "–" : t.inflight ?? 0}</td>
         <td class="num">${me ? "–" : t.ok ?? 0}</td>

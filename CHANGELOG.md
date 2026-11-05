@@ -36,6 +36,11 @@ this is called out below.
 - **Delegate names.** Each delegate has a name (`name`, `--name`, or the hostname
   by default) that travels with its gossip and is shown in the dashboard, the
   tray menu, `tokenshare delegates` and metrics. `tokenshare forget` accepts one.
+- **Real model info for peers' models.** Delegates publish each shared model's
+  size, digest and details (family, parameter size, quantization). `ollama ls`
+  and model pickers show peers' models like local ones instead of with size
+  `0 B` and a stand-in ID, and the dashboard marks a model that delegates have in
+  different builds (`differing_models` in `/_ts/status`).
 - **Forget from the dashboard.** Opened on the delegate's own machine, the
   dashboard has a *Forget* button for each peer.
 

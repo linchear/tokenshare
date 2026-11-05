@@ -50,13 +50,37 @@ impl Mock {
     }
 }
 
-/// A fake ollama serving `models`. `/api/chat` streams 3 NDJSON lines
-/// (`chunk_delay_ms` apart) and `/api/generate` sends one line then fails.
-pub async fn mock_ollama(models: &[&str], chunk_delay_ms: u64) -> Mock {
-    let tags: Vec<Value> = models
+/// What the mock's `/api/tags` says about `model`: a size, details, and a
+/// digest made from the name, or from `name#build` to fake another build.
+pub fn mock_tags_entry(model: &str) -> Value {
+    use sha2::{Digest, Sha256};
+    let name = model.split('#').next().unwrap();
+    let digest: String = Sha256::digest(model.as_bytes())
         .iter()
-        .map(|m| json!({"name": m, "size": 1}))
+        .map(|b| format!("{b:02x}"))
         .collect();
+    json!({
+        "name": name,
+        "model": name,
+        "modified_at": "2026-10-01T12:00:00.123456-07:00",
+        "size": 4_000_000_000u64 + name.len() as u64,
+        "digest": digest,
+        "details": {
+            "parent_model": "",
+            "format": "gguf",
+            "family": "llama",
+            "families": ["llama"],
+            "parameter_size": "8.0B",
+            "quantization_level": "Q4_0",
+        },
+    })
+}
+
+/// A fake ollama serving `models` (see [`mock_tags_entry`] for `name#build`).
+/// `/api/chat` streams 3 NDJSON lines (`chunk_delay_ms` apart) and
+/// `/api/generate` sends one line then fails.
+pub async fn mock_ollama(models: &[&str], chunk_delay_ms: u64) -> Mock {
+    let tags: Vec<Value> = models.iter().map(|m| mock_tags_entry(m)).collect();
     let dropped = Arc::new(AtomicBool::new(false));
     let dropped2 = dropped.clone();
     let chats = Arc::new(AtomicUsize::new(0));

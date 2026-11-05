@@ -57,7 +57,10 @@ Every delegate that shares its ollama publishes its load in its own entry: `slot
 `max_peer_requests` if lower), `busy` (how many of those are taken, counting a
 pool filled by its own users) and `loaded` (shared models in memory, from
 ollama's `/api/ps`, refreshed every `poll_interval_secs`). It advertises only the
-models in `shared_models`, if that is set. These travel with
+models in `shared_models`, if that is set, with `model_info` for each: the size,
+digest and details from ollama's `/api/tags`, which peers use to list the model
+(see [Ollama compatibility](ollama-compatibility.md)) and to spot two builds
+under one name. Routing does not use them. These travel with
 keepalives and table pulls, so they can be a keepalive interval old. The sending
 delegate adds what it knows first-hand: how many of its own requests are in flight
 to each peer, and which peers refused a request or could not be reached in the last

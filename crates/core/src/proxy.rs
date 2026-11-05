@@ -146,14 +146,15 @@ impl AppState {
         self.table.refresh(&self.client).await;
         // Peers only hear of the models they may use, so they never pick us
         // for the others (and not sharing at all means advertising none).
-        let models = self
+        let shared: Vec<_> = self
             .table
             .all_models()
             .into_iter()
-            .map(|m| m.name)
-            .filter(|m| self.config.shares_model(m))
+            .filter(|m| self.config.shares_model(&m.name))
             .collect();
-        self.delegates.update_self(models);
+        let info = shared.iter().map(|m| m.meta()).collect();
+        let models = shared.into_iter().map(|m| m.name).collect();
+        self.delegates.update_self_with_info(models, info);
         self.publish_load();
     }
 
@@ -667,7 +668,8 @@ fn tags(s: &AppState, include_local: bool) -> Response {
     {
         for name in peer.models {
             if !have.iter().any(|h| model_matches(&name, h)) {
-                models.push(peer_model_entry(&name, peer.last_seen));
+                let meta = peer.model_info.iter().find(|m| m.name == name);
+                models.push(peer_model_entry(&name, meta, peer.last_seen));
                 have.push(name);
             }
         }
