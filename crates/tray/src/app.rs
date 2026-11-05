@@ -24,6 +24,8 @@ use tokenshare_core::settings::{apply, Form};
 #[derive(Clone, PartialEq)]
 struct Snapshot {
     health: Health,
+    /// Whether the delegate is running; Open Dashboard is greyed out otherwise.
+    running: bool,
     headline: String,
     pool: String,
     peers: Vec<PeerRow>,
@@ -73,8 +75,9 @@ fn snapshot(current: &Shared) -> Snapshot {
     let Some(s) = &c.state else {
         return Snapshot {
             health: Health::Down,
+            running: false,
             headline: format!("Token Share: {} Not running", icon::emoji(Health::Down)),
-            pool: c.error.clone().unwrap_or_default(),
+            pool: c.error.as_deref().map(menu_error).unwrap_or_default(),
             peers: vec![],
         };
     };
@@ -102,6 +105,7 @@ fn snapshot(current: &Shared) -> Snapshot {
         .collect();
     Snapshot {
         health: h,
+        running: true,
         headline: {
             let mut notes = vec![];
             if s.config.masquerade {
@@ -127,6 +131,19 @@ fn snapshot(current: &Shared) -> Snapshot {
         ),
         peers,
     }
+}
+
+/// Why the delegate is not running, short enough for a menu line. The full
+/// message is in tokenshare.log.
+fn menu_error(e: &str) -> String {
+    const MAX: usize = 80;
+    // The first clause is the useful part: "port 11343 is already in use (is ollama...".
+    let first = e.split(['(', ';']).next().unwrap_or(e).trim();
+    let mut text = format!("Cannot start: {first}");
+    if text.chars().count() > MAX {
+        text = text.chars().take(MAX - 1).collect::<String>() + "…";
+    }
+    text
 }
 
 fn icon_for(h: Health) -> Icon {
@@ -176,22 +193,19 @@ pub fn run() {
         rt.block_on(daemon::start(config, data_dir.clone()))
             .map_err(|e| format!("{e:#}"))
     };
-    let mut running = match start(&rt) {
-        Ok(r) => Some(r),
+    let (mut running, start_error) = match start(&rt) {
+        Ok(r) => (Some(r), None),
         Err(e) => {
             tracing::error!(error = %e, "delegate failed to start");
-            None
+            (None, Some(e))
         }
     };
     let current: Shared = Arc::new(Mutex::new(Current::default()));
     {
         let mut c = current.lock().unwrap();
         c.state = running.as_ref().map(|r| r.state.clone());
-        c.error = if running.is_none() {
-            Some("failed to start; see tokenshare.log".into())
-        } else {
-            None
-        };
+        // Shown in the menu, so it says why rather than only pointing at the log.
+        c.error = start_error;
     }
 
     #[allow(unused_mut)]
@@ -262,6 +276,7 @@ pub fn run() {
             Event::UserEvent(UserEvent::Snapshot(s)) => {
                 headline.set_text(&s.headline);
                 pool.set_text(&s.pool);
+                dashboard_item.set_enabled(s.running);
                 for item in peers.items() {
                     // Delegates are submenus; "No other delegates" is a plain item.
                     if let Some(sub) = item.as_submenu() {
@@ -303,6 +318,7 @@ pub fn run() {
                         "http://127.0.0.1:{}/_ts/dashboard",
                         state.config.port
                     )),
+                    // The item is greyed out then; this only covers a click in between.
                     None => tracing::warn!("delegate is not running; no dashboard to open"),
                 }
             }
@@ -543,4 +559,44 @@ fn set_regular_app(_: &EventLoopWindowTarget<UserEvent>, _: bool) {}
 fn show_errors(w: &SettingsWindow, errors: &[String]) {
     let json = serde_json::to_string(errors).expect("strings serialize");
     let _ = w.webview.evaluate_script(&format!("showErrors({json})"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_delegate_that_failed_to_start_says_why_and_has_no_dashboard() {
+        let current: Shared = Arc::new(Mutex::new(Current {
+            state: None,
+            error: Some(
+                "port 11343 is already in use (is ollama running? it uses this port by default)"
+                    .into(),
+            ),
+        }));
+        let s = snapshot(&current);
+        assert!(!s.running);
+        assert_eq!(s.health, Health::Down);
+        assert!(s.headline.contains("Not running"));
+        assert_eq!(s.pool, "Cannot start: port 11343 is already in use");
+    }
+
+    #[test]
+    fn long_start_errors_are_cut_to_fit_a_menu() {
+        let long = "ollama host http://localhost:11434 is this delegate itself and this message goes on and on and on";
+        let text = menu_error(long);
+        assert_eq!(text.chars().count(), 80);
+        assert!(text.ends_with('…'));
+        assert!(text.starts_with("Cannot start: ollama host"));
+    }
+
+    #[test]
+    fn a_running_delegate_has_a_dashboard() {
+        let state = AppState::new("test".into(), Config::default(), None);
+        let current: Shared = Arc::new(Mutex::new(Current {
+            state: Some(state),
+            error: None,
+        }));
+        assert!(snapshot(&current).running);
+    }
 }

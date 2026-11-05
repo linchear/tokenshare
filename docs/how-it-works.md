@@ -24,6 +24,17 @@ that a newcomer happens to ask first.
   delegate's own entry is never overwritten by others. This repairs missed
   announcements.
 
+### Mixed versions
+
+Delegates are upgraded one machine at a time, so different versions share a
+pool. New fields in table entries, joins and keepalives are always optional:
+older delegates ignore fields they do not know, and newer ones treat a missing
+field as "not published" (an old peer without load information is ranked by what
+this delegate sees of it first-hand). The table hash covers only ids and URLs, so
+versions agree on it. `crates/core/tests/compat.rs` checks all of this against
+the v0.1.0 wire format; a change that breaks it should be listed in the
+[changelog](../CHANGELOG.md).
+
 ## Routing
 
 For `/api/chat`, `/api/generate`, `/api/embed`, `/api/embeddings` and
