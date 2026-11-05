@@ -58,6 +58,7 @@ pub fn status_json(s: &AppState) -> Value {
         .collect();
     json!({
         "id": s.id,
+        "name": s.delegates.self_entry().name,
         "state": health(s),
         "draining": s.is_draining(),
         "sharing": s.config.shares_models(),
@@ -65,7 +66,14 @@ pub fn status_json(s: &AppState) -> Value {
         "auth": s.secret.is_some(),
         "port": s.config.port,
         "ports": s.config.listen_ports(),
-        "pool": { "size": s.pool.size(), "in_use": s.pool.in_use(), "forwarding": s.pool.forwarding() },
+        "pool": {
+            "size": s.pool.size(),
+            "in_use": s.pool.in_use(),
+            "forwarding": s.pool.forwarding(),
+            "peer_limit": s.pool.peer_size(),
+            "peer_in_use": s.pool.peer_in_use(),
+        },
+        "shared_models": s.config.shared_models,
         "ollama": hosts,
         "version": env!("CARGO_PKG_VERSION"),
         "delegates": s.delegates.shared_entries(),

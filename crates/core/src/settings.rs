@@ -27,6 +27,16 @@ pub struct Form {
     /// Shared secret every delegate in the pool must use; blank for none.
     #[serde(default)]
     pub pool_secret: String,
+    /// How this machine is shown to others; blank for its hostname.
+    #[serde(default)]
+    pub name: String,
+    /// Most requests from other delegates at once; blank for no limit.
+    #[serde(default)]
+    pub max_peer_requests: String,
+    /// Models other delegates may use, separated by commas or lines; blank
+    /// for all of them.
+    #[serde(default)]
+    pub shared_models: String,
 }
 
 impl Form {
@@ -41,6 +51,12 @@ impl Form {
             masquerade: c.masquerade,
             ollama_port: c.ollama_port.to_string(),
             pool_secret: c.pool_secret.clone().unwrap_or_default(),
+            name: c.name.clone().unwrap_or_default(),
+            max_peer_requests: c
+                .max_peer_requests
+                .map(|n| n.to_string())
+                .unwrap_or_default(),
+            shared_models: c.shared_models.join(", "),
         }
     }
 }
@@ -128,6 +144,50 @@ pub fn apply(form: &Form, base: &Config) -> Result<Config, Vec<String>> {
         }
         Some(secret.to_string())
     };
+
+    let name = form.name.trim();
+    c.name = if name.is_empty() {
+        None
+    } else if name.chars().count() > crate::table::MAX_NAME_CHARS {
+        errors.push(format!(
+            "Name must be at most {} characters",
+            crate::table::MAX_NAME_CHARS
+        ));
+        None
+    } else {
+        crate::table::clean_name(name)
+    };
+
+    let max = form.max_peer_requests.trim();
+    c.max_peer_requests = if max.is_empty() {
+        None
+    } else {
+        match max.parse::<usize>() {
+            Ok(n) if n >= 1 && n <= c.pool_size => Some(n),
+            _ => {
+                errors.push(format!(
+                    "Requests from other delegates must be a number from 1 to {} (the connections to ollama), or blank for no limit",
+                    c.pool_size
+                ));
+                None
+            }
+        }
+    };
+
+    c.shared_models = form
+        .shared_models
+        .split([',', '\n'])
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(str::to_string)
+        .collect();
+    for m in &c.shared_models {
+        if m.contains(char::is_whitespace) {
+            errors.push(format!(
+                "Shared model \"{m}\" has a space in it; separate models with commas"
+            ));
+        }
+    }
 
     if errors.is_empty() {
         Ok(c)
@@ -353,6 +413,77 @@ mod tests {
             };
             let errors = apply(&f, &Config::default()).unwrap_err();
             assert!(errors[0].contains("pool secret"), "{bad}: {errors:?}");
+        }
+    }
+
+    #[test]
+    fn name_peer_limit_and_shared_models_round_trip() {
+        let f = Form {
+            name: "  Living room  Mac ".into(),
+            pool_size: "4".into(),
+            max_peer_requests: " 1 ".into(),
+            shared_models: " qwen3, llama3.2:1b \n\n phi4 ,".into(),
+            ..form()
+        };
+        let c = apply(&f, &Config::default()).unwrap();
+        assert_eq!(c.name.as_deref(), Some("Living room Mac"));
+        assert_eq!(c.max_peer_requests, Some(1));
+        assert_eq!(c.shared_models, vec!["qwen3", "llama3.2:1b", "phi4"]);
+        let back = Form::from_config(&c);
+        assert_eq!(
+            (back.name.as_str(), back.max_peer_requests.as_str()),
+            ("Living room Mac", "1")
+        );
+        assert_eq!(back.shared_models, "qwen3, llama3.2:1b, phi4");
+        assert_eq!(apply(&back, &c).unwrap().shared_models, c.shared_models);
+
+        // Blank means the defaults: hostname, no limit, every model.
+        let cleared = apply(&form(), &c).unwrap();
+        assert_eq!((cleared.name, cleared.max_peer_requests), (None, None));
+        assert!(cleared.shared_models.is_empty());
+    }
+
+    #[test]
+    fn bad_names_limits_and_model_lists_are_reported() {
+        for (f, expect) in [
+            (
+                Form {
+                    name: "x".repeat(41),
+                    ..form()
+                },
+                "Name",
+            ),
+            (
+                Form {
+                    max_peer_requests: "0".into(),
+                    ..form()
+                },
+                "from 1 to 3",
+            ),
+            (
+                Form {
+                    max_peer_requests: "4".into(),
+                    ..form()
+                },
+                "from 1 to 3",
+            ),
+            (
+                Form {
+                    max_peer_requests: "some".into(),
+                    ..form()
+                },
+                "Requests from other delegates",
+            ),
+            (
+                Form {
+                    shared_models: "qwen3 llama3".into(),
+                    ..form()
+                },
+                "commas",
+            ),
+        ] {
+            let errors = apply(&f, &Config::default()).unwrap_err();
+            assert!(errors[0].contains(expect), "{expect}: {errors:?}");
         }
     }
 

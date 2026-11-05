@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
-use axum::extract::{Request, State};
+use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
@@ -83,6 +83,7 @@ impl AppState {
             data_dir.map(|d| d.join("table.json")),
         )
         .with_expiry_secs(config.peer_expiry_secs);
+        delegates.set_self_name(config.display_name());
         // `daemon::start` checks the config first, with a friendlier error.
         let secret = config
             .secret()
@@ -92,7 +93,7 @@ impl AppState {
             id,
             table: LocalTable::new(&config.ollama_hosts),
             delegates,
-            pool: Pool::new(config.pool_size),
+            pool: Pool::with_peer_limit(config.pool_size, config.peer_slots()),
             activity: Activity::new(),
             config,
             client,
@@ -132,32 +133,48 @@ impl AppState {
         }
     }
 
+    /// Whether other delegates may use the local model `requested` names.
+    pub fn lends(&self, requested: &str) -> bool {
+        self.table
+            .all_models()
+            .iter()
+            .any(|m| model_matches(requested, &m.name) && self.config.shares_model(&m.name))
+    }
+
     /// Re-query local ollama hosts and publish the result in our own entry.
     pub async fn refresh_local(&self) {
         self.table.refresh(&self.client).await;
-        // Not sharing means advertising no models, so peers never pick us.
-        let models = if self.config.shares_models() {
-            self.table
-                .all_models()
-                .into_iter()
-                .map(|m| m.name)
-                .collect()
-        } else {
-            vec![]
-        };
+        // Peers only hear of the models they may use, so they never pick us
+        // for the others (and not sharing at all means advertising none).
+        let models = self
+            .table
+            .all_models()
+            .into_iter()
+            .map(|m| m.name)
+            .filter(|m| self.config.shares_model(m))
+            .collect();
         self.delegates.update_self(models);
         self.publish_load();
     }
 
     /// Put our current capacity and warm models in our own entry, so the next
     /// keepalive or table pull carries them. A delegate that does not share
-    /// publishes none: peers never route to it anyway.
+    /// publishes none: peers never route to it anyway. Peers see the slots they
+    /// may use, so with `max_peer_requests` (or local users filling the pool)
+    /// they count us as full while slots are still free for local users.
     pub fn publish_load(&self) {
         if self.config.shares_models() && !self.config.ollama_hosts.is_empty() {
+            let slots = self.pool.peer_size();
+            let loaded = self
+                .table
+                .loaded_models()
+                .into_iter()
+                .filter(|m| self.config.shares_model(m))
+                .collect();
             self.delegates.set_self_load(
-                Some(self.pool.size() as u32),
-                Some(self.pool.in_use() as u32),
-                self.table.loaded_models(),
+                Some(slots as u32),
+                Some(slots.saturating_sub(self.pool.peer_free()) as u32),
+                loaded,
             );
         } else {
             self.delegates.set_self_load(None, None, vec![]);
@@ -226,8 +243,15 @@ pub async fn poll_local_table(state: Arc<AppState>) {
     }
 }
 
-async fn status(State(s): State<Arc<AppState>>) -> Json<Value> {
-    Json(crate::status::status_json(&s))
+/// The status, plus whether the caller may manage this delegate (forget
+/// peers): only from this machine, as with `/_ts/forget` itself.
+async fn status(
+    State(s): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Json<Value> {
+    let mut v = crate::status::status_json(&s);
+    v["manage"] = json!(mesh::is_local(addr.ip()));
+    Json(v)
 }
 
 /// A page that polls `/_ts/status` and shows the pool. It carries no data of its
@@ -521,6 +545,13 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
             "this delegate is not sharing its ollama",
         );
     }
+    if forwarded && s.table.host_for_model(&model).is_some() && !s.lends(&model) {
+        info!(path, model, status = 503, "model not shared with peers");
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this delegate does not share that model",
+        );
+    }
     let log = |target: &str, status: u16| {
         info!(
             method = %parts.method, path, model, target, status, forwarded,
@@ -534,7 +565,7 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
     let local_host = s.table.host_for_model(&model).filter(|_| has_local);
     if let Some(host) = &local_host {
         let permit = if needs_slot {
-            s.pool.try_acquire().map(Some)
+            s.pool.try_acquire(forwarded).map(Some)
         } else {
             Some(None)
         };

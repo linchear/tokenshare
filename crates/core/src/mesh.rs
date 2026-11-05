@@ -28,6 +28,9 @@ pub struct JoinRequest {
     pub url: Option<String>,
     pub port: u16,
     pub models: Vec<String>,
+    /// The joiner's name. Delegates that predate names send none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -104,7 +107,8 @@ pub async fn join(
     let url = req
         .url
         .unwrap_or_else(|| format!("http://{}:{}", fmt_ip(addr.ip()), req.port));
-    let entry = DelegateEntry::new(req.id, url, req.models);
+    let mut entry = DelegateEntry::new(req.id, url, req.models);
+    entry.name = req.name.as_deref().and_then(crate::table::clean_name);
     info!(id = %entry.id, url = %entry.url, "delegate joined");
     s.delegates.merge([entry.clone()]);
     tokio::spawn(announce_new_member(s.clone(), entry.clone()));
@@ -138,18 +142,43 @@ pub fn is_local(ip: IpAddr) -> bool {
         || matches!(ip, IpAddr::V6(v6) if v6.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback()))
 }
 
-/// Forget a delegate (the `tokenshare forget` command). This only answers to
-/// this machine, even with a pool secret: anyone else in the pool could
-/// otherwise knock delegates out of the table.
+/// Whether a browser sent this request from a page served by this delegate
+/// (or it came from something that is not a browser, which sends no `Origin`).
+/// Stops other web pages open on this machine from acting on the delegate.
+fn same_origin(headers: &HeaderMap) -> bool {
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return true;
+    };
+    let host = headers.get(header::HOST).and_then(|h| h.to_str().ok());
+    let origin_host = origin
+        .to_str()
+        .ok()
+        .and_then(|o| o.split_once("://"))
+        .map(|(_, rest)| rest.trim_end_matches('/'));
+    origin_host.is_some() && origin_host == host
+}
+
+/// Forget a delegate (`tokenshare forget`, the tray menu and the dashboard).
+/// This only answers to this machine, even with a pool secret: anyone else in
+/// the pool could otherwise knock delegates out of the table.
 pub async fn forget(
     State(s): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<ForgetRequest>,
 ) -> Response {
     if !is_local(addr.ip()) {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "forgetting a delegate is only allowed from this machine" })),
+        )
+            .into_response();
+    }
+    if !same_origin(&headers) {
+        warn!(origin = ?headers.get(header::ORIGIN), "refused to forget a delegate for another web page");
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "only this delegate's own dashboard may do that" })),
         )
             .into_response();
     }
@@ -230,6 +259,7 @@ pub async fn join_via(s: &AppState, url: &str) -> Result<()> {
         url: (!me.url.is_empty()).then_some(me.url),
         port: s.config.port,
         models: me.models,
+        name: me.name,
     };
     let resp = s
         .to_peer(s.client.post(format!("{url}/_ts/join")))
@@ -486,6 +516,29 @@ mod url_tests {
 #[cfg(test)]
 mod local_tests {
     use super::*;
+
+    #[test]
+    fn only_pages_from_this_delegate_count_as_the_same_origin() {
+        let h = |origin: Option<&str>| {
+            let mut h = HeaderMap::new();
+            h.insert(header::HOST, "127.0.0.1:11343".parse().unwrap());
+            if let Some(o) = origin {
+                h.insert(header::ORIGIN, o.parse().unwrap());
+            }
+            h
+        };
+        assert!(same_origin(&h(None)), "the CLI sends no Origin");
+        assert!(same_origin(&h(Some("http://127.0.0.1:11343"))));
+        for other in [
+            "http://evil.example",
+            "http://127.0.0.1:8080",
+            "http://localhost:11343",
+            "null",
+            "",
+        ] {
+            assert!(!same_origin(&h(Some(other))), "{other}");
+        }
+    }
 
     #[test]
     fn only_this_machine_counts_as_local() {

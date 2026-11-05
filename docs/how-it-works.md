@@ -4,8 +4,8 @@ This is the long version of the [README](../README.md#how-it-works).
 
 ## The delegate table
 
-Every delegate keeps a table of all delegates: id, URL, status, models, load
-(slots, busy slots, models loaded in memory) and `last_seen`. It is persisted to disk, so a restarted delegate remembers its peers.
+Every delegate keeps a table of all delegates: id, name, URL, status, models,
+load (slots, busy slots, models loaded in memory) and `last_seen`. It is persisted to disk, so a restarted delegate remembers its peers.
 There is no coordinator. The *first contact* (`fc`) is just an ordinary delegate
 that a newcomer happens to ask first.
 
@@ -43,7 +43,9 @@ the request body, then:
 
 1. serves it locally if its ollama has the model and a pool slot is free
    (`pool_size`, default 3). With several local ollama hosts, one that already has
-   the model loaded is preferred;
+   the model loaded is preferred. A request forwarded by a peer also needs one of
+   the slots peers may use (`max_peer_requests`) and a model in
+   `shared_models`;
 2. otherwise tries online peers that have the model, best first (see below), moving
    on if a peer is full (503), errors, or is unreachable;
 3. otherwise returns `503` with `Retry-After` (or `404` if nobody has the model).
@@ -51,8 +53,11 @@ the request body, then:
 ### Choosing a peer
 
 Every delegate that shares its ollama publishes its load in its own entry: `slots`
-(its `pool_size`), `busy` (slots in use) and `loaded` (models in memory, from
-ollama's `/api/ps`, refreshed every `poll_interval_secs`). These travel with
+(how many requests peers may run there at once: its `pool_size`, or
+`max_peer_requests` if lower), `busy` (how many of those are taken, counting a
+pool filled by its own users) and `loaded` (shared models in memory, from
+ollama's `/api/ps`, refreshed every `poll_interval_secs`). It advertises only the
+models in `shared_models`, if that is set. These travel with
 keepalives and table pulls, so they can be a keepalive interval old. The sending
 delegate adds what it knows first-hand: how many of its own requests are in flight
 to each peer, and which peers refused a request or could not be reached in the last
@@ -104,10 +109,12 @@ or rejects it and never forwards again, so there are no loops.
   mesh instead of circulating forever. A delegate that was only offline for a
   while returns by rejoining.
 - **Forget.** In the tray menu, under *Delegates*, each delegate has *Forget this
-  delegate*; headless machines use `tokenshare delegates` to list them and
-  `tokenshare forget <id|id-prefix|url>` to forget one (these ask the delegate
-  running on this machine, on `--port` or the configured port, and it refuses them
-  from anywhere else). It is removed and kept out (the choice is saved in
+  delegate*, and the dashboard has a *Forget* button on each peer when it is
+  opened on this machine. Headless machines use `tokenshare delegates` to list
+  them and `tokenshare forget <name|id|id-prefix|url>` to forget one (these ask
+  the delegate running on this machine, on `--port` or the configured port). The
+  delegate refuses to forget from anywhere else, and from web pages it did not
+  serve (a browser request whose `Origin` is not the delegate itself). It is removed and kept out (the choice is saved in
   `forgotten.json`) until it is heard from again with a newer `last_seen`, so
   forgetting a dead one sticks while forgetting one that is alive only lasts until
   its next keepalive.

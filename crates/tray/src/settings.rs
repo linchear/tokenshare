@@ -4,12 +4,13 @@ use tokenshare_core::settings::Form;
 
 const PAGE: &str = include_str!("settings.html");
 
-/// The page with `form` filled in.
+/// The page with `form` filled in, plus this machine's hostname to show as
+/// the name used when none is set.
 pub fn page(form: &Form) -> String {
+    let mut init = serde_json::to_value(form).expect("form serializes");
+    init["hostname"] = tokenshare_core::Config::default().display_name().into();
     // "</" would end the script block early if a value contained it.
-    let json = serde_json::to_string(form)
-        .expect("form serializes")
-        .replace("</", "<\\/");
+    let json = init.to_string().replace("</", "<\\/");
     PAGE.replace("/*INITIAL*/null", &json)
 }
 
@@ -17,7 +18,7 @@ pub fn page(form: &Form) -> String {
 #[serde(tag = "cmd", rename_all = "lowercase")]
 pub enum Message {
     Save {
-        form: Form,
+        form: Box<Form>,
         /// Set after a warning (such as a busy port) to save regardless.
         #[serde(default)]
         force: bool,
@@ -50,6 +51,7 @@ mod tests {
         assert!(!html.contains("/*INITIAL*/"));
         assert!(html.contains("http://a:1/<\\/script><b>"));
         assert!(html.contains("\"port\":\"11343\""));
+        assert!(html.contains("\"hostname\":"));
     }
 
     #[test]

@@ -32,20 +32,30 @@
 <body>
 <h1>Token Share Settings</h1>
 <form id="f" autocomplete="off" spellcheck="false">
+  <label for="name">Name <span style="font-weight:400;color:var(--muted)">(shown to the pool; blank uses the hostname)</span></label>
+  <input id="name" maxlength="40" title="How the rest of the pool sees this machine. Blank uses its hostname.">
+
   <label for="fc">First contact</label>
   <input id="fc" placeholder="http://192.168.2.3:11343">
-  <div class="hint">Another delegate to join through at startup. Leave blank to wait for others to join you.</div>
+  <div class="hint">A delegate to join through at startup. Blank waits for others to join you.</div>
 
   <label for="hosts">Ollama hosts <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
   <textarea id="hosts" placeholder="http://localhost:11434"></textarea>
-  <div class="hint">Ollama instances reachable from this machine, one per line. Leave empty to only use other delegates' ollama.</div>
+  <div class="hint">One per line. Leave empty to only use other delegates' ollama.</div>
 
   <label class="check"><input type="checkbox" id="share"> Share my ollama with other delegates</label>
-  <div class="hint">Turn off to look unavailable to other delegates: they will not send you requests. You can still use your own ollama and theirs.</div>
+  <div class="hint">When off, others send you nothing; you still use your ollama and theirs.</div>
+  <div id="lending">
+    <div class="row">
+      <div><label for="maxpeer">Max requests from others</label><input id="maxpeer" inputmode="numeric" placeholder="no limit"></div>
+      <div><label for="shared">Shared models</label><input id="shared" placeholder="all"></div>
+    </div>
+    <div class="hint">Comma-separated; <code>qwen3</code> covers all its sizes.</div>
+  </div>
 
   <label for="secret">Pool secret <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
   <input id="secret" type="password" placeholder="none">
-  <div class="hint">If set, every delegate in the pool must use the same one, and apps on other machines must send it as their API key. Apps on this machine need no change. <a href="#" id="reveal">Show</a></div>
+  <div class="hint">Every delegate needs the same one; apps on other machines send it as their API key. <a href="#" id="reveal">Show</a></div>
 
   <div class="row">
     <div><label for="pool">Connections to ollama</label><input id="pool" inputmode="numeric"></div>
@@ -53,7 +63,7 @@
   </div>
 
   <label class="check"><input type="checkbox" id="masq"> <span>Also listen on the ollama port (<span class="oport">11434</span>), as a masquerade</span></label>
-  <div class="hint">Lets apps that already talk to ollama's port use the pool without any change. The listen port above stays open for other delegates: they can use your Ollama hosts through it (if you share them, above), while apps connecting to it directly are not served from your hosts.</div>
+  <div class="hint">Apps already using ollama's port get the pool unchanged. Other delegates keep using the listen port.</div>
   <div id="masq-warn" class="callout"><b>This is ollama's own port.</b> Do not run a local ollama on <span class="oport">11434</span> at the same time: start it on another port (for example <code>OLLAMA_HOST=127.0.0.1:11435</code>) and list that address under Ollama hosts above.</div>
 
   <details>
@@ -68,7 +78,7 @@
   </details>
 
   <div id="errors"><ul></ul></div>
-  <div class="hint" style="margin-top:14px">Saving restarts this delegate. Requests in progress get a few seconds to finish.</div>
+  <div class="hint" style="margin-top:14px">Saving restarts this delegate; requests in progress get a few seconds to finish.</div>
   <div class="actions">
     <button type="button" id="cancel">Cancel</button>
     <button type="submit" id="save" class="primary">Save &amp; Restart</button>
@@ -82,6 +92,10 @@
   $('masq').checked = init.masquerade;
   $('oport').value = init.ollama_port;
   $('secret').value = init.pool_secret || '';
+  $('name').value = init.name || '';
+  $('name').placeholder = init.hostname || 'hostname';
+  $('maxpeer').value = init.max_peer_requests || '';
+  $('shared').value = init.shared_models || '';
   $('reveal').onclick = e => {
     e.preventDefault();
     const shown = $('secret').type === 'text';
@@ -128,7 +142,8 @@
     send({ cmd: 'save', force, form: { fc: $('fc').value, advertise_url: $('adv').value,
       ollama_hosts: $('hosts').value, port: $('port').value, pool_size: $('pool').value,
       share_with_peers: $('share').checked, masquerade: $('masq').checked,
-      ollama_port: $('oport').value, pool_secret: $('secret').value } });
+      ollama_port: $('oport').value, pool_secret: $('secret').value, name: $('name').value,
+      max_peer_requests: $('maxpeer').value, shared_models: $('shared').value } });
   };
   // WKWebView in an app without a working Edit menu ignores Cmd+A/C/X/V, so on
   // macOS we do them ourselves. Copy and paste go through the host's clipboard.
@@ -160,11 +175,16 @@
     const off = $('hosts').value.trim() === '';
     $('share').disabled = off;
     $('share').closest('label').style.opacity = off ? '.5' : '1';
+    // Limits on lending only matter while lending.
+    const lending = !off && $('share').checked;
+    for (const id of ['maxpeer', 'shared']) $(id).disabled = !lending;
+    $('lending').style.opacity = lending ? '1' : '.5';
   }
   $('hosts').addEventListener('input', syncShare);
+  $('share').addEventListener('change', syncShare);
   syncShare();
   syncMasq();
-  $('fc').focus();
+  $('name').focus();
 </script>
 </body>
 </html>

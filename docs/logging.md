@@ -75,15 +75,17 @@ scrape_configs:
 
 | Metric | Type | Labels | |
 | --- | --- | --- | --- |
-| `tokenshare_info` | gauge | `id`, `version` | always 1 |
+| `tokenshare_info` | gauge | `id`, `name`, `version` | always 1 |
 | `tokenshare_state` | gauge | `state` | 1 for the current state (`active`, `in-use`, `no-models`, `down`) |
 | `tokenshare_draining`, `tokenshare_sharing` | gauge | | 0 or 1 |
 | `tokenshare_auth_required` | gauge | | 1 if this delegate requires the pool secret |
 | `tokenshare_pool_slots`, `tokenshare_pool_slots_in_use` | gauge | | local ollama slots |
+| `tokenshare_pool_peer_slots`, `tokenshare_pool_peer_slots_in_use` | gauge | | the slots other delegates may use (`max_peer_requests`), and how many they use |
 | `tokenshare_forwarding` | gauge | | requests being forwarded to peers |
 | `tokenshare_ollama_up`, `_models`, `_loaded_models` | gauge | `host` | per local ollama host |
 | `tokenshare_peers` | gauge | `status` | known peers by status |
 | `tokenshare_peer_up` | gauge | `peer`, `id` | 1 if online |
+| `tokenshare_peer_info` | gauge | `peer`, `id`, `name` | always 1; the peer's name, to join on `peer` |
 | `tokenshare_peer_models`, `_loaded_models`, `_slots`, `_slots_busy` | gauge | `peer` | as the peer last published them |
 | `tokenshare_peer_last_seen_timestamp_seconds` | gauge | `peer` | the peer's own clock |
 | `tokenshare_upstream_inflight` | gauge | `target` | this delegate's requests in flight per upstream |

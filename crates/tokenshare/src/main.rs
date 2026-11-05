@@ -43,6 +43,17 @@ struct Args {
     /// Max concurrent ollama connections (default 3).
     #[arg(long)]
     pool_size: Option<usize>,
+    /// How this machine is shown to the pool (default: its hostname).
+    #[arg(long)]
+    name: Option<String>,
+    /// The most requests from other delegates served at once (default: no
+    /// limit beyond --pool-size).
+    #[arg(long)]
+    max_peer_requests: Option<usize>,
+    /// A model other delegates may use; repeat for several. Without any,
+    /// every model is shared.
+    #[arg(long = "share-model")]
+    shared_models: Vec<String>,
 }
 
 /// Commands for the delegate already running on this machine. Without one,
@@ -54,7 +65,7 @@ enum Cmd {
     /// Forget a delegate, for example one that is gone for good. It stays out
     /// until it is heard from again.
     Forget {
-        /// Its id, the start of its id (4+ characters), or its URL.
+        /// Its name, its id, the start of its id (4+ characters), or its URL.
         target: String,
     },
 }
@@ -105,6 +116,15 @@ async fn main() -> Result<()> {
     }
     if let Some(n) = args.pool_size {
         config.pool_size = n;
+    }
+    if args.name.is_some() {
+        config.name = args.name;
+    }
+    if args.max_peer_requests.is_some() {
+        config.max_peer_requests = args.max_peer_requests;
+    }
+    if !args.shared_models.is_empty() {
+        config.shared_models = args.shared_models;
     }
 
     let data_dir = default_data_dir().context("no home directory for data dir")?;
