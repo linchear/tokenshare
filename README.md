@@ -180,8 +180,9 @@ Dashboard**), and `/_ts/metrics` exposes it to Prometheus. See
   different machines, so keep them roughly in sync with NTP.
 - **Not every endpoint is pooled.** `pull`, `create`, `delete` and friends only act
   on a machine's own ollama.
-- **Peer models in `ollama ls` show size `0 B`** and a stand-in ID, because only
-  names are shared between delegates.
+- **Same name, same model.** Routing treats `llama3:latest` on one machine as
+  the same model as `llama3:latest` on another. The dashboard marks a model that
+  delegates have in different builds, but requests for it still go to either.
 
 ## Status
 

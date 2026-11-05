@@ -28,12 +28,12 @@ to launch Ollama.app. A delegate with no local ollama must therefore answer thes
 itself, and it does, on both of its ports.
 
 `/api/tags` lists this machine's models exactly as ollama reports them, plus peers'
-models with the fields filled in as far as the delegate knows them. A peer model
-carries:
-
-- a **stand-in digest**, a stable hash of the name (not the real content digest);
-- a **size of 0**;
-- a **modified time** equal to when the peer was last heard from.
+models with what the peer published about them: the real **size**, **digest** and
+**details** (family, parameter size, quantization), so `ollama ls` and model
+pickers show them like local ones. The **modified time** is when the peer was last
+heard from. A peer that predates model info publishes only names; its models get a
+**stand-in digest** (a stable hash of the name, not the real content digest) and a
+**size of 0**.
 
 `ollama ls` slices the first 12 characters of every digest and crashes on an empty
 one, which is why every field is filled in.

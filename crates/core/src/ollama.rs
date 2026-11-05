@@ -4,11 +4,20 @@ use std::time::Duration;
 use serde_json::Value;
 use tracing::{debug, warn};
 
+use crate::table::ModelMeta;
+
 #[derive(Debug, Clone)]
 pub struct ModelInfo {
     pub name: String,
     /// The entry exactly as ollama reported it in `/api/tags`.
     pub raw: Value,
+}
+
+impl ModelInfo {
+    /// What peers are told about this model.
+    pub fn meta(&self) -> ModelMeta {
+        ModelMeta::from_tags_entry(&self.name, &self.raw)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -173,30 +182,34 @@ pub fn rfc3339_utc(unix_ms: u64) -> String {
     )
 }
 
-/// An `/api/tags` entry for a model that lives on a peer. We only know its name,
-/// but clients index into the other fields: `ollama ls` slices the digest and
-/// panics if it is empty, so every field ollama sends is filled in. The digest
-/// is a stable hash of the name (a stand-in, not the real content digest), the
-/// size is unknown (0), and the time is when the peer was last heard from.
-pub fn peer_model_entry(name: &str, last_seen_ms: u64) -> Value {
+/// An `/api/tags` entry for a model that lives on a peer, from what the peer
+/// published about it. Clients index into every field (`ollama ls` slices the
+/// digest and panics if it is empty), so all are filled in. For a peer that
+/// published only the name (one older than model info), the digest is a
+/// stable hash of the name, a stand-in rather than the real content digest,
+/// and the size is unknown (0). The time is when the peer was last heard from.
+pub fn peer_model_entry(name: &str, meta: Option<&ModelMeta>, last_seen_ms: u64) -> Value {
     use sha2::{Digest, Sha256};
-    let digest: String = Sha256::digest(format!("tokenshare:{name}"))
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let digest = meta.and_then(|m| m.digest_key()).unwrap_or_else(|| {
+        Sha256::digest(format!("tokenshare:{name}"))
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    });
+    let d = meta.map(|m| m.details.clone()).unwrap_or_default();
     serde_json::json!({
         "name": name,
         "model": name,
         "modified_at": rfc3339_utc(last_seen_ms),
-        "size": 0,
+        "size": meta.and_then(|m| m.size).unwrap_or(0),
         "digest": digest,
         "details": {
-            "parent_model": "",
-            "format": "",
-            "family": "",
-            "families": null,
-            "parameter_size": "",
-            "quantization_level": "",
+            "parent_model": d.parent_model,
+            "format": d.format,
+            "family": d.family,
+            "families": (!d.families.is_empty()).then_some(d.families),
+            "parameter_size": d.parameter_size,
+            "quantization_level": d.quantization_level,
         },
     })
 }
@@ -261,7 +274,7 @@ mod tests {
 
     #[test]
     fn peer_entries_have_every_field_clients_index_into() {
-        let e = peer_model_entry("qwen3:14b", 1_792_331_486_000);
+        let e = peer_model_entry("qwen3:14b", None, 1_792_331_486_000);
         assert_eq!(e["name"], "qwen3:14b");
         assert_eq!(e["model"], "qwen3:14b");
         assert!(
@@ -270,13 +283,40 @@ mod tests {
         );
         assert_eq!(
             e["digest"],
-            peer_model_entry("qwen3:14b", 1)["digest"],
+            peer_model_entry("qwen3:14b", None, 1)["digest"],
             "stable per name"
         );
-        assert_ne!(e["digest"], peer_model_entry("llama3:8b", 1)["digest"]);
+        assert_ne!(
+            e["digest"],
+            peer_model_entry("llama3:8b", None, 1)["digest"]
+        );
         assert_eq!(e["modified_at"], "2026-10-18T13:51:26Z");
         assert_eq!(e["size"], 0);
         assert!(e["details"].is_object());
+        assert_eq!(e["details"]["families"], Value::Null);
+    }
+
+    #[test]
+    fn peer_entries_carry_what_the_peer_published() {
+        let meta = ModelMeta::from_tags_entry(
+            "qwen3:14b",
+            &serde_json::json!({
+                "size": 9_276_198_565u64,
+                "digest": "sha256:BB7E9A8F1C0C2D3E4F5061728394A5B6C7D8E9F00112233445566778899AABB",
+                "details": {"family": "qwen3", "families": ["qwen3"],
+                            "parameter_size": "14.8B", "quantization_level": "Q4_K_M"},
+            }),
+        );
+        let e = peer_model_entry("qwen3:14b", Some(&meta), 1);
+        assert_eq!(e["size"], 9_276_198_565u64);
+        assert_eq!(
+            e["digest"], "bb7e9a8f1c0c2d3e4f5061728394a5b6c7d8e9f00112233445566778899aabb",
+            "written as ollama writes its own"
+        );
+        assert_eq!(e["details"]["parameter_size"], "14.8B");
+        assert_eq!(e["details"]["quantization_level"], "Q4_K_M");
+        assert_eq!(e["details"]["families"], serde_json::json!(["qwen3"]));
+        assert_eq!(e["details"]["format"], "", "still present when unknown");
     }
 
     #[test]

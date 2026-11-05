@@ -254,6 +254,7 @@ async fn an_old_delegate_can_join_a_new_one_and_read_its_table() {
         .unwrap();
     assert!(mine["slots"].is_number(), "the new fields are really there");
     assert_eq!(mine["name"], "new-one");
+    assert_eq!(mine["model_info"][0]["name"], "gemma2:latest");
     let table: OldTable = serde_json::from_value(raw).expect("v0.1.0 can parse the table");
     assert_eq!(table.count, 2);
     // Both versions hash the same table the same way, so announces do not

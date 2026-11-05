@@ -33,6 +33,12 @@ pub struct DelegateEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub models: Vec<String>,
+    /// What ollama reports about each of `models` beyond its name, so peers
+    /// can list them with real sizes and tell builds apart. Absent from
+    /// delegates that predate it, and possibly incomplete: a model without an
+    /// entry here is simply one we know only by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_info: Vec<ModelMeta>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub load: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -70,6 +76,7 @@ impl DelegateEntry {
             kind: "delegate".into(),
             name: None,
             models,
+            model_info: vec![],
             load: None,
             vram: None,
             ram: None,
@@ -79,6 +86,134 @@ impl DelegateEntry {
             last_seen: now_ms(),
         }
     }
+}
+
+/// One model as ollama's `/api/tags` describes it, minus the fields that only
+/// make sense on its own machine. Every field is optional on the wire.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelMeta {
+    pub name: String,
+    /// Bytes on disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    /// ollama's content digest: two machines with the same digest have the
+    /// same model, whatever its tag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
+    #[serde(default, skip_serializing_if = "ModelDetails::is_empty")]
+    pub details: ModelDetails,
+}
+
+/// ollama's `details` object.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelDetails {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub parent_model: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub format: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub family: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub families: Vec<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub parameter_size: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub quantization_level: String,
+}
+
+impl ModelDetails {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// Longest string kept in a model's details, in characters.
+const MAX_DETAIL_CHARS: usize = 64;
+/// Most families kept for one model.
+const MAX_FAMILIES: usize = 8;
+
+impl ModelMeta {
+    /// From an entry of ollama's `/api/tags`. Fields of the wrong type are
+    /// left out rather than failing the whole entry.
+    pub fn from_tags_entry(name: &str, raw: &serde_json::Value) -> Self {
+        let d = &raw["details"];
+        let text = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+        Self {
+            name: name.to_string(),
+            size: raw["size"].as_u64(),
+            digest: raw["digest"].as_str().map(str::to_string),
+            details: ModelDetails {
+                parent_model: text(&d["parent_model"]),
+                format: text(&d["format"]),
+                family: text(&d["family"]),
+                families: d["families"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|f| f.as_str())
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                parameter_size: text(&d["parameter_size"]),
+                quantization_level: text(&d["quantization_level"]),
+            },
+        }
+        .cleaned()
+    }
+
+    /// Made safe to hand to ollama clients: these values come from other
+    /// machines and end up in `/api/tags`, where the `ollama` CLI parses them
+    /// (a size beyond `i64` would fail its whole listing) and prints them.
+    pub fn cleaned(mut self) -> Self {
+        let text = |s: &str| -> String {
+            s.chars()
+                .filter(|c| !c.is_control())
+                .take(MAX_DETAIL_CHARS)
+                .collect()
+        };
+        self.size = self.size.filter(|&n| n <= i64::MAX as u64);
+        // `sha256:<hex>` or bare hex, as ollama writes them.
+        self.digest = self.digest.filter(|d| {
+            let hex = d.strip_prefix("sha256:").unwrap_or(d);
+            (12..=64).contains(&hex.len()) && hex.bytes().all(|b| b.is_ascii_hexdigit())
+        });
+        let d = &mut self.details;
+        for s in [
+            &mut d.parent_model,
+            &mut d.format,
+            &mut d.family,
+            &mut d.parameter_size,
+            &mut d.quantization_level,
+        ] {
+            *s = text(s);
+        }
+        d.families.truncate(MAX_FAMILIES);
+        for f in &mut d.families {
+            *f = text(f);
+        }
+        d.families.retain(|f| !f.is_empty());
+        self
+    }
+
+    /// The digest without its `sha256:` prefix, lowercased, for comparing.
+    pub fn digest_key(&self) -> Option<String> {
+        self.digest
+            .as_deref()
+            .map(|d| d.strip_prefix("sha256:").unwrap_or(d).to_ascii_lowercase())
+    }
+}
+
+/// `info` limited to what can be trusted next to `models`: only models that
+/// are listed, each once, each cleaned.
+pub(crate) fn clean_model_info(info: Vec<ModelMeta>, models: &[String]) -> Vec<ModelMeta> {
+    let mut out: Vec<ModelMeta> = vec![];
+    for m in info {
+        if models.contains(&m.name) && !out.iter().any(|o| o.name == m.name) {
+            out.push(m.cleaned());
+        }
+    }
+    out
 }
 
 /// Longest delegate name kept, in characters.
@@ -229,9 +364,15 @@ impl DelegateTable {
 
     /// Refresh our own entry: models, online, and a new `last_seen`.
     pub fn update_self(&self, models: Vec<String>) {
+        self.update_self_with_info(models, vec![]);
+    }
+
+    /// Like [`Self::update_self`], with what ollama said about each model.
+    pub fn update_self_with_info(&self, models: Vec<String>, info: Vec<ModelMeta>) {
         {
             let mut g = self.inner.write().unwrap();
             let me = g.get_mut(&self.self_id).unwrap();
+            me.model_info = clean_model_info(info, &models);
             me.models = models;
             me.status = Status::Online;
             me.last_seen = now_ms();
@@ -315,6 +456,7 @@ impl DelegateTable {
                 }
                 // Names come from other machines and end up in terminals and menus.
                 e.name = e.name.as_deref().and_then(clean_name);
+                e.model_info = clean_model_info(std::mem::take(&mut e.model_info), &e.models);
                 if e.id != self.self_id {
                     // Too old to be alive, or forgotten and not heard from since.
                     if self.expired(e.last_seen) {
@@ -441,6 +583,85 @@ mod tests {
 
     fn table() -> DelegateTable {
         DelegateTable::new("me".into(), Some("http://me:1".into()), None)
+    }
+
+    #[test]
+    fn model_info_from_ollama_tags() {
+        let raw = serde_json::json!({
+            "name": "llama3:latest",
+            "size": 4_661_224_676u64,
+            "digest": "365c0bd3c000a25d28ddbf732fe1c6add414de7275464c4e4d1c3b5fcb5d8ad1",
+            "details": {"format": "gguf", "family": "llama", "families": ["llama"],
+                        "parameter_size": "8.0B", "quantization_level": "Q4_0", "extra": 1},
+        });
+        let m = ModelMeta::from_tags_entry("llama3:latest", &raw);
+        assert_eq!(m.size, Some(4_661_224_676));
+        assert_eq!(m.details.parameter_size, "8.0B");
+        assert_eq!(m.details.families, vec!["llama".to_string()]);
+        assert_eq!(
+            serde_json::to_value(&m).unwrap()["details"],
+            serde_json::json!({"format": "gguf", "family": "llama", "families": ["llama"],
+                               "parameter_size": "8.0B", "quantization_level": "Q4_0"}),
+            "empty and unknown fields are not sent"
+        );
+        // Wrong types are dropped, not fatal.
+        let odd =
+            ModelMeta::from_tags_entry("x", &serde_json::json!({"size": "big", "details": 3}));
+        assert_eq!(
+            (odd.size, odd.digest, odd.details.is_empty()),
+            (None, None, true)
+        );
+    }
+
+    #[test]
+    fn model_info_from_peers_is_cleaned() {
+        let t = table();
+        let mut e = entry("a", 10);
+        e.models = vec!["m:latest".into()];
+        let good = ModelMeta {
+            name: "m:latest".into(),
+            size: Some(u64::MAX),
+            digest: Some("sha256:ABCDEF0123456789".into()),
+            details: ModelDetails {
+                family: format!("llama\u{1b}[31m{}", "x".repeat(200)),
+                families: vec!["".into(); 20],
+                ..Default::default()
+            },
+        };
+        e.model_info = vec![
+            good.clone(),
+            ModelMeta {
+                size: Some(1),
+                ..good.clone()
+            },
+            ModelMeta {
+                name: "not-listed".into(),
+                ..Default::default()
+            },
+        ];
+        t.merge([e]);
+        let info = &t.peers()[0].model_info;
+        assert_eq!(info.len(), 1, "listed models only, each once");
+        assert_eq!(info[0].size, None, "too big for ollama clients to parse");
+        assert_eq!(info[0].digest_key().as_deref(), Some("abcdef0123456789"));
+        assert!(!info[0].details.family.contains('\u{1b}'));
+        assert_eq!(info[0].details.family.chars().count(), MAX_DETAIL_CHARS);
+        assert!(info[0].details.families.is_empty());
+
+        for bad in [
+            "",
+            "sha256:",
+            "abc",
+            "not-hex-but-long-enough",
+            &"a".repeat(65),
+        ] {
+            let m = ModelMeta {
+                digest: Some(bad.into()),
+                ..Default::default()
+            }
+            .cleaned();
+            assert_eq!(m.digest, None, "{bad:?}");
+        }
     }
 
     #[test]
