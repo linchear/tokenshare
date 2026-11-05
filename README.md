@@ -186,6 +186,7 @@ This is early software, version 0.1. It was built and exercised mainly on **macO
 (Apple Silicon)**. The Windows and Linux builds are cross-compiled and a CI workflow
 for all three platforms is included, but they have had far less hands-on use. Bug
 reports with the `response` log lines around the problem are the most useful kind.
+What changed between versions is in the [changelog](CHANGELOG.md).
 
 ## Development
 
