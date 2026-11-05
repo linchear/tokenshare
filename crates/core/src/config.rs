@@ -70,6 +70,10 @@ pub struct Config {
     /// so local apps and the CLI need no change. Turn off if something on this
     /// machine relays traffic from elsewhere (a tunnel or reverse proxy).
     pub trust_localhost: bool,
+    /// Tray app only: desktop notifications when delegates go offline, come
+    /// back or join, when a peer refuses the pool secret, and when this
+    /// delegate cannot start.
+    pub notifications: bool,
 }
 
 impl Default for Config {
@@ -95,6 +99,7 @@ impl Default for Config {
             peer_expiry_secs: 86_400,
             pool_secret: None,
             trust_localhost: true,
+            notifications: true,
         }
     }
 }

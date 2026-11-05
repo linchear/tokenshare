@@ -66,6 +66,8 @@
   <div class="hint">Apps already using ollama's port get the pool unchanged. Other delegates keep using the listen port.</div>
   <div id="masq-warn" class="callout"><b>This is ollama's own port.</b> Do not run a local ollama on <span class="oport">11434</span> at the same time: start it on another port (for example <code>OLLAMA_HOST=127.0.0.1:11435</code>) and list that address under Ollama hosts above.</div>
 
+  <label class="check"><input type="checkbox" id="notify"> <span>Notify me when delegates go offline, come back or join, or refuse the pool secret</span></label>
+
   <details>
     <summary>Advanced</summary>
     <label for="adv">Advertise URL</label>
@@ -90,6 +92,7 @@
   $('fc').value = init.fc; $('hosts').value = init.ollama_hosts; $('pool').value = init.pool_size;
   $('port').value = init.port; $('share').checked = init.share_with_peers; $('adv').value = init.advertise_url;
   $('masq').checked = init.masquerade;
+  $('notify').checked = init.notifications !== false;
   $('oport').value = init.ollama_port;
   $('secret').value = init.pool_secret || '';
   $('name').value = init.name || '';
@@ -143,7 +146,8 @@
       ollama_hosts: $('hosts').value, port: $('port').value, pool_size: $('pool').value,
       share_with_peers: $('share').checked, masquerade: $('masq').checked,
       ollama_port: $('oport').value, pool_secret: $('secret').value, name: $('name').value,
-      max_peer_requests: $('maxpeer').value, shared_models: $('shared').value } });
+      max_peer_requests: $('maxpeer').value, shared_models: $('shared').value,
+      notifications: $('notify').checked } });
   };
   // WKWebView in an app without a working Edit menu ignores Cmd+A/C/X/V, so on
   // macOS we do them ourselves. Copy and paste go through the host's clipboard.

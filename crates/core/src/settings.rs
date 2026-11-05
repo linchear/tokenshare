@@ -37,6 +37,13 @@ pub struct Form {
     /// for all of them.
     #[serde(default)]
     pub shared_models: String,
+    /// Desktop notifications from the tray app.
+    #[serde(default = "yes")]
+    pub notifications: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Form {
@@ -57,6 +64,7 @@ impl Form {
                 .map(|n| n.to_string())
                 .unwrap_or_default(),
             shared_models: c.shared_models.join(", "),
+            notifications: c.notifications,
         }
     }
 }
@@ -116,6 +124,7 @@ pub fn apply(form: &Form, base: &Config) -> Result<Config, Vec<String>> {
 
     c.share_with_peers = form.share_with_peers;
     c.masquerade = form.masquerade;
+    c.notifications = form.notifications;
     match form.ollama_port.trim().parse::<u16>() {
         Ok(p) if p > 0 => c.ollama_port = p,
         _ => errors.push("Ollama port must be a number from 1 to 65535".into()),
@@ -243,6 +252,23 @@ mod tests {
             c.ollama_hosts,
             vec!["http://localhost:11434", "http://gpu:11434"]
         );
+    }
+
+    #[test]
+    fn notifications_toggle_round_trips() {
+        let mut f = form();
+        assert!(f.notifications, "on by default");
+        f.notifications = false;
+        let c = apply(&f, &Config::default()).unwrap();
+        assert!(!c.notifications);
+        assert!(!Form::from_config(&c).notifications);
+        // A page that predates the setting does not turn them off.
+        let old: Form = serde_json::from_value(serde_json::json!({
+            "fc": "", "advertise_url": "", "ollama_hosts": "", "port": "11343",
+            "pool_size": "3", "share_with_peers": true, "masquerade": false,
+        }))
+        .unwrap();
+        assert!(old.notifications);
     }
 
     #[test]

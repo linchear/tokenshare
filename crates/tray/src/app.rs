@@ -17,6 +17,7 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 use wry::{WebView, WebViewBuilder};
 
 use crate::icon;
+use crate::notices::{self, Notice, Notifier};
 use crate::settings::{self, Message};
 use tokenshare_core::settings::{apply, Form};
 
@@ -50,6 +51,8 @@ enum UserEvent {
 struct Current {
     state: Option<Arc<AppState>>,
     error: Option<String>,
+    /// The `notifications` setting, known even when the delegate failed to start.
+    notify: bool,
 }
 
 type Shared = Arc<Mutex<Current>>;
@@ -213,6 +216,7 @@ pub fn run() {
         c.state = running.as_ref().map(|r| r.state.clone());
         // Shown in the menu, so it says why rather than only pointing at the log.
         c.error = start_error;
+        c.notify = notifications_on(&config_path);
     }
 
     #[allow(unused_mut)]
@@ -466,6 +470,7 @@ fn save_and_restart(
 
     config.save(path).map_err(|e| invalid(format!("{e:#}")))?;
     tracing::info!("settings saved, restarting delegate");
+    current.lock().unwrap().notify = config.notifications;
 
     if let Some(r) = running.take() {
         if let Err(e) = rt.block_on(r.stop(Duration::from_secs(5))) {
@@ -504,10 +509,81 @@ fn open_in_browser(url: &str) {
     }
 }
 
+/// Whether notifications are on in the config file (on if it cannot be read).
+fn notifications_on(config_path: &Option<PathBuf>) -> bool {
+    config_path
+        .as_ref()
+        .and_then(|p| Config::load(p).ok())
+        .is_none_or(|c| c.notifications)
+}
+
+/// What [`Notifier`] looks at, and whether notifications are on.
+fn notice_view(current: &Shared) -> (notices::View, bool) {
+    let c = current.lock().unwrap();
+    let Some(s) = &c.state else {
+        let view = notices::View {
+            start_error: c.error.as_deref().map(menu_error),
+            ..Default::default()
+        };
+        return (view, c.notify);
+    };
+    let view = notices::View {
+        // A new AppState on every (re)start; 0 is "not running".
+        generation: Arc::as_ptr(s) as usize,
+        start_error: None,
+        peers: s
+            .delegates
+            .peers()
+            .into_iter()
+            .map(|p| notices::Peer {
+                label: p.name.clone().unwrap_or_else(|| p.url.clone()),
+                online: p.status == Status::Online,
+                id: p.id,
+                url: p.url,
+            })
+            .collect(),
+        secret_refused: s.activity.secret_refusals(),
+    };
+    (view, c.notify)
+}
+
+/// Show `n` as a desktop notification. On a thread of its own: delivering one
+/// can block for a moment, and the poller must not.
+fn show(n: Notice) {
+    std::thread::spawn(move || {
+        #[cfg(target_os = "macos")]
+        {
+            // Show them as Token Share's (with its icon). Fails harmlessly when
+            // run outside the app bundle, e.g. with `cargo run`.
+            static APP: std::sync::Once = std::sync::Once::new();
+            APP.call_once(|| {
+                let _ = notify_rust::set_application("com.tokenshare.tray");
+            });
+        }
+        tracing::info!(title = %n.title, "notification");
+        if let Err(e) = notify_rust::Notification::new()
+            .appname("Token Share")
+            .summary(&n.title)
+            .body(&n.body)
+            .show()
+        {
+            tracing::warn!(error = %e, "cannot show notification");
+        }
+    });
+}
+
 fn spawn_poller(current: Shared, proxy: EventLoopProxy<UserEvent>) {
     std::thread::spawn(move || {
         let mut last: Option<Snapshot> = None;
+        let mut notifier = Notifier::default();
         loop {
+            let (view, notify) = notice_view(&current);
+            // Always updated, so turning notifications on does not replay old news.
+            for n in notifier.update(&view, std::time::Instant::now()) {
+                if notify {
+                    show(n);
+                }
+            }
             let now = snapshot(&current);
             if last.as_ref() != Some(&now) {
                 if proxy.send_event(UserEvent::Snapshot(now.clone())).is_err() {
@@ -583,6 +659,7 @@ mod tests {
     fn a_delegate_that_failed_to_start_says_why_and_has_no_dashboard() {
         let current: Shared = Arc::new(Mutex::new(Current {
             state: None,
+            notify: true,
             error: Some(
                 "port 11343 is already in use (is ollama running? it uses this port by default)"
                     .into(),
@@ -610,6 +687,7 @@ mod tests {
         let current: Shared = Arc::new(Mutex::new(Current {
             state: Some(state),
             error: None,
+            notify: true,
         }));
         assert!(snapshot(&current).running);
     }

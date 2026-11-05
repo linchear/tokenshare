@@ -7,6 +7,8 @@ mod app;
 // Only the tray apps draw icons; on other platforms the module is unused.
 #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 mod icon;
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+mod notices;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod settings;
 

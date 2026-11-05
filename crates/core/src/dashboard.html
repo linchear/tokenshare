@@ -238,6 +238,7 @@ function render(s) {
   const local = new Set();
   (s.ollama || []).filter((h) => h.up).forEach((h) => h.models.forEach((m) => local.add(m)));
   const kept = s.sharing && self ? [...local].filter((m) => !(self.models || []).includes(m)).length : 0;
+  const refusing = new Set(act.secret_refused || []);
   const differing = s.differing_models || [];
   const differ = new Set(differing.map((x) => x.model));
   $("differ-help").textContent = differing.length
@@ -258,7 +259,7 @@ function render(s) {
       const refused = (t.declined || 0) + (t.unreachable || 0);
       const limited = me && s.sharing && s.pool.peer_limit != null && s.pool.peer_limit < s.pool.size;
       return `<tr>
-        <td><div>${d.name ? `<span class="name">${esc(d.name)}</span>` : `<span class="mono">${esc(host(d.url))}</span>`}${me ? '<span class="tag">this delegate</span>' : ""}${t.cooling ? '<span class="tag cool">cooling</span>' : ""}</div>
+        <td><div>${d.name ? `<span class="name">${esc(d.name)}</span>` : `<span class="mono">${esc(host(d.url))}</span>`}${me ? '<span class="tag">this delegate</span>' : ""}${t.cooling ? '<span class="tag cool">cooling</span>' : ""}${refusing.has(d.url) ? '<span class="tag bad" title="It answered 401: it needs the pool secret, or this machine\'s does not match">refuses our secret</span>' : ""}</div>
             <div class="muted mono">${d.name ? esc(host(d.url)) + " · " : ""}${esc(short(d.id))}</div></td>
         <td>${pill(d.status)}</td>
         <td>${me ? meter(s.pool.in_use, s.sharing ? s.pool.size : null) : meter(d.busy, d.slots)}${limited

@@ -193,6 +193,14 @@ async fn a_delegate_without_the_right_secret_cannot_join_or_use_the_pool() {
             .to_string()
             .contains("pool secret"));
         assert!(a.state.delegates.peers().is_empty(), "{secret:?}");
+        // X knows who turned it away, for its dashboard and tray.
+        assert_eq!(x.state.activity.secret_refusals(), vec![a.url.clone()]);
+        let status: Value = get(&format!("{}/_ts/status", x.url), None)
+            .await
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(status["activity"]["secret_refused"], json!([a.url]));
     }
     assert_eq!(a.mock.chat_count(), 0);
 }
@@ -231,4 +239,35 @@ async fn a_peer_with_another_secret_is_skipped_for_one_that_matches() {
     }
     assert_eq!(a.mock.chat_count(), 0);
     assert_eq!(b.mock.chat_count(), 4);
+}
+
+#[tokio::test]
+async fn a_peer_refusing_our_secret_is_remembered_until_it_accepts_it() {
+    let a = node(strict(&["gemma2:latest"])).await;
+    let c = node(NodeOpts {
+        client_only: true,
+        secret: Some("another-secret"),
+        ..Default::default()
+    })
+    .await;
+    let mut stale = a.state.delegates.self_entry();
+    stale.url = a.url.clone();
+    stale.last_seen = tokenshare_core::table::now_ms();
+    c.state.delegates.merge([stale]);
+
+    // A forwarded request answered 401 counts, like one from gossip.
+    let r = chat(&c.url, None).await;
+    assert_eq!(r.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(c.state.activity.secret_refusals(), vec![a.url.clone()]);
+
+    // Once a request to it succeeds, it is no longer listed.
+    let fixed = node(NodeOpts {
+        client_only: true,
+        secret: Some(SECRET),
+        ..Default::default()
+    })
+    .await;
+    fixed.state.activity.secret_refused_by(&a.url);
+    pull_table(&fixed.state, &a.url).await.unwrap();
+    assert!(fixed.state.activity.secret_refusals().is_empty());
 }

@@ -38,6 +38,19 @@ heard from. A peer that predates model info publishes only names; its models get
 `ollama ls` slices the first 12 characters of every digest and crashes on an empty
 one, which is why every field is filled in.
 
+Every response produced by an ollama, local or on a peer, carries
+`X-Tokenshare-Served-By` with the name of the delegate whose ollama produced it
+(its id if it has no name). Characters outside printable ASCII, and `%`, are
+percent-encoded as UTF-8, so `Zoë's Mac` arrives as `Zo%C3%AB's Mac`. Errors the
+delegate answers itself (a `404` for an unknown model, a `503` when everything is
+busy) do not have it. For example:
+
+```bash
+curl -si localhost:11343/api/generate -d '{"model":"llama3.2","prompt":"hi","stream":false}' \
+  | grep -i served-by
+# x-tokenshare-served-by: gpu-box
+```
+
 ## Using `ollama` against it
 
 ```bash
