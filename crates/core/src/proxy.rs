@@ -64,6 +64,11 @@ fn with_served_by(mut r: Response, who: &DelegateEntry) -> Response {
     r
 }
 
+/// How often a request waiting for a slot asks peers again.
+const PEER_RETRY: Duration = Duration::from_secs(2);
+/// The most requests waiting for a slot at once; any more are answered 503.
+const MAX_WAITING: usize = 64;
+
 /// Endpoints that run a model and so consume a pool slot.
 const INFERENCE_PATHS: &[&str] = &[
     "/api/chat",
@@ -297,6 +302,13 @@ async fn metrics(State(s): State<Arc<AppState>>) -> Response {
 
 fn error(status: StatusCode, msg: impl Into<String>) -> Response {
     (status, Json(json!({ "error": msg.into() }))).into_response()
+}
+
+fn shutting_down() -> Response {
+    let mut r = error(StatusCode::SERVICE_UNAVAILABLE, "delegate is shutting down");
+    r.headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+    r
 }
 
 fn busy() -> Response {
@@ -546,10 +558,7 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
     }
 
     if s.is_draining() {
-        let mut r = error(StatusCode::SERVICE_UNAVAILABLE, "delegate is shutting down");
-        r.headers_mut()
-            .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
-        return r;
+        return shutting_down();
     }
 
     // Older clients send the model as "name"; some (the ollama CLI's `show`) send
@@ -588,102 +597,146 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
         );
     };
 
-    // 1. Serve locally if we have the model and a free pool slot.
-    // (A forwarded request got here past the sharing check above.)
-    let has_local = on_ollama_port || forwarded;
-    let local_host = s.table.host_for_model(&model).filter(|_| has_local);
-    if let Some(host) = &local_host {
-        let permit = if needs_slot {
-            s.pool.try_acquire(forwarded).map(Some)
-        } else {
-            Some(None)
-        };
-        if let Some(permit) = permit {
-            let flight = s.activity.start(host);
-            return match out.send(format!("{host}{path_and_query}"), None).await {
-                Ok(resp) => {
-                    log(host, resp.status().as_u16());
-                    with_served_by(
-                        stream_response(
-                            resp,
-                            (permit, flight),
-                            s.cutoff.subscribe(),
-                            meta("local", host, Some(&model)),
-                        ),
-                        &s.delegates.self_entry(),
-                    )
-                }
-                Err(e) => {
-                    warn!(path, host, error = %e, "ollama request failed");
-                    error(StatusCode::BAD_GATEWAY, "ollama request failed")
-                }
-            };
-        }
-    }
-
-    // 2. Otherwise hand it to a peer, unless we were forwarded this ourselves.
-    let mut candidates_exist = local_host.is_some();
+    // A request from a client waits for a slot when everything is busy; one
+    // forwarded by a peer is refused at once, so that peer can try another.
+    let wait = if forwarded {
+        Duration::ZERO
+    } else {
+        Duration::from_secs(s.config.queue_timeout_secs)
+    };
+    let deadline = start + wait;
     if !forwarded {
         visited.push(s.id.clone());
-        let visited_header = visited.join(",");
-        let peers = routing::order(
-            s.delegates.peers_with_model(&model, &visited),
-            &model,
-            &s.activity,
-        );
-        candidates_exist |= !peers.is_empty();
-        // Counts as in-flight from the first attempt until the stream ends.
-        let mut guard = Some(s.pool.track_forward());
-        for peer in peers {
-            let flight = s.activity.start(&peer.url);
-            // Retrying is safe only until the first byte reaches the client.
-            match out
-                .send(
-                    format!("{}{path_and_query}", peer.url),
-                    Some(&visited_header),
-                )
-                .await
-            {
-                Ok(resp) if resp.status().is_success() => {
-                    log(&peer.url, resp.status().as_u16());
-                    s.activity.secret_accepted_by(&peer.url);
-                    return with_served_by(
-                        stream_response(
-                            resp,
-                            (guard.take(), flight),
-                            s.cutoff.subscribe(),
-                            meta("peer", &peer.url, Some(&model)),
-                        ),
-                        &peer,
-                    );
-                }
-                Ok(resp) => {
-                    if resp.status() == StatusCode::UNAUTHORIZED {
-                        s.activity.secret_refused_by(&peer.url);
+    }
+    let visited_header = visited.join(",");
+    let mut waiting = None;
+    // Peers are asked again only every PEER_RETRY: they cannot tell us when
+    // they have room, and asking costs them a refusal each time.
+    let mut ask_peers = true;
+    loop {
+        // Registered before looking, so a slot freed in between still wakes us.
+        let freed = s.pool.freed();
+        tokio::pin!(freed);
+        freed.as_mut().enable();
+
+        // A request that waited into a shutdown must not start now.
+        if waiting.is_some() && s.is_draining() {
+            log("-", 503);
+            return shutting_down();
+        }
+
+        // 1. Serve locally if we have the model and a free pool slot.
+        // (A forwarded request got here past the sharing check above.)
+        let has_local = on_ollama_port || forwarded;
+        let local_host = s.table.host_for_model(&model).filter(|_| has_local);
+        if let Some(host) = &local_host {
+            let permit = if needs_slot {
+                s.pool.try_acquire(forwarded).map(Some)
+            } else {
+                Some(None)
+            };
+            if let Some(permit) = permit {
+                drop(waiting.take());
+                let flight = s.activity.start(host);
+                return match out.send(format!("{host}{path_and_query}"), None).await {
+                    Ok(resp) => {
+                        log(host, resp.status().as_u16());
+                        with_served_by(
+                            stream_response(
+                                resp,
+                                (permit, flight),
+                                s.cutoff.subscribe(),
+                                meta("local", host, Some(&model)),
+                            ),
+                            &s.delegates.self_entry(),
+                        )
                     }
-                    s.activity.refused(&peer.url, Refusal::Declined);
-                    info!(peer = %peer.url, status = resp.status().as_u16(), "peer declined, trying next")
-                }
-                Err(e) => {
-                    s.activity.refused(&peer.url, Refusal::Unreachable);
-                    warn!(peer = %peer.url, error = %e, "peer unreachable, trying next");
-                    if e.is_connect() {
-                        s.delegates
-                            .set_status(&peer.id, crate::table::Status::Unavailable);
+                    Err(e) => {
+                        warn!(path, host, error = %e, "ollama request failed");
+                        error(StatusCode::BAD_GATEWAY, "ollama request failed")
+                    }
+                };
+            }
+        }
+
+        // 2. Otherwise hand it to a peer, unless we were forwarded this ourselves.
+        let mut candidates_exist = local_host.is_some();
+        if !forwarded {
+            let peers = routing::order(
+                s.delegates.peers_with_model(&model, &visited),
+                &model,
+                &s.activity,
+            );
+            candidates_exist |= !peers.is_empty();
+            // Counts as in-flight from the first attempt until the stream ends.
+            let mut guard = Some(s.pool.track_forward());
+            for peer in peers.into_iter().filter(|_| ask_peers) {
+                let flight = s.activity.start(&peer.url);
+                // Retrying is safe only until the first byte reaches the client.
+                match out
+                    .send(
+                        format!("{}{path_and_query}", peer.url),
+                        Some(&visited_header),
+                    )
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => {
+                        drop(waiting.take());
+                        log(&peer.url, resp.status().as_u16());
+                        s.activity.secret_accepted_by(&peer.url);
+                        return with_served_by(
+                            stream_response(
+                                resp,
+                                (guard.take(), flight),
+                                s.cutoff.subscribe(),
+                                meta("peer", &peer.url, Some(&model)),
+                            ),
+                            &peer,
+                        );
+                    }
+                    Ok(resp) => {
+                        if resp.status() == StatusCode::UNAUTHORIZED {
+                            s.activity.secret_refused_by(&peer.url);
+                        }
+                        s.activity.refused(&peer.url, Refusal::Declined);
+                        info!(peer = %peer.url, status = resp.status().as_u16(), "peer declined, trying next")
+                    }
+                    Err(e) => {
+                        s.activity.refused(&peer.url, Refusal::Unreachable);
+                        warn!(peer = %peer.url, error = %e, "peer unreachable, trying next");
+                        if e.is_connect() {
+                            s.delegates
+                                .set_status(&peer.id, crate::table::Status::Unavailable);
+                        }
                     }
                 }
             }
         }
-    }
 
-    if candidates_exist {
-        log("-", 503);
-        s.activity.rejected(Rejection::Busy);
-        busy()
-    } else {
-        log("-", 404);
-        s.activity.rejected(Rejection::NotFound);
-        error(StatusCode::NOT_FOUND, format!("model '{model}' not found"))
+        if !candidates_exist {
+            log("-", 404);
+            s.activity.rejected(Rejection::NotFound);
+            return error(StatusCode::NOT_FOUND, format!("model '{model}' not found"));
+        }
+
+        // 3. Everyone who has the model is busy: wait for room, up to the deadline.
+        let now = Instant::now();
+        let give_up = now >= deadline
+            || s.is_draining()
+            || (waiting.is_none() && s.pool.waiting() >= MAX_WAITING);
+        if give_up {
+            log("-", 503);
+            s.activity.rejected(Rejection::Busy);
+            return busy();
+        }
+        if waiting.is_none() {
+            info!(path, model, "every slot is busy, waiting for one");
+            waiting = Some(s.pool.wait_guard());
+        }
+        tokio::select! {
+            _ = &mut freed => ask_peers = false,
+            _ = tokio::time::sleep(PEER_RETRY.min(deadline - now)) => ask_peers = true,
+        }
     }
 }
 

@@ -293,6 +293,9 @@ pub struct NodeOpts<'a> {
     pub max_peer_requests: Option<usize>,
     /// `shared_models`; empty shares everything.
     pub shared_models: &'a [&'a str],
+    /// `queue_timeout_secs`. 0 by default here, so a test of a busy pool gets
+    /// its 503 at once; the tests of waiting set it.
+    pub queue_timeout_secs: u64,
 }
 
 impl Default for NodeOpts<'_> {
@@ -312,6 +315,7 @@ impl Default for NodeOpts<'_> {
             name: None,
             max_peer_requests: None,
             shared_models: &[],
+            queue_timeout_secs: 0,
         }
     }
 }
@@ -338,6 +342,7 @@ pub async fn node(opts: NodeOpts<'_>) -> Node {
         name: opts.name.map(str::to_string),
         max_peer_requests: opts.max_peer_requests,
         shared_models: opts.shared_models.iter().map(|m| m.to_string()).collect(),
+        queue_timeout_secs: opts.queue_timeout_secs,
         ..Config::default()
     };
     let state = AppState::new(opts.id.unwrap_or_else(uuid_like), config, opts.data_dir);

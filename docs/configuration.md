@@ -30,6 +30,7 @@ pool_size = 3
 | `keepalive_ttl` | `3` | Extra relay hops per keepalive |
 | `sync_interval_secs` | `60` | Full table pull period |
 | `shutdown_grace_secs` | `30` | How long to let in-flight requests finish on shutdown |
+| `queue_timeout_secs` | `30` | When every slot that could serve a request is busy, how long it waits for one before getting `503`; `0` answers `503` at once ([how it works](how-it-works.md#routing)) |
 | `peer_expiry_secs` | `86400` | Drop delegates not heard from for this long; `0` keeps them forever |
 
 ## Where files live

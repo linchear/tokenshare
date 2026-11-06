@@ -48,7 +48,14 @@ the request body, then:
    `shared_models`;
 2. otherwise tries online peers that have the model, best first (see below), moving
    on if a peer is full (503), errors, or is unreachable;
-3. otherwise returns `503` with `Retry-After` (or `404` if nobody has the model).
+3. otherwise, if somebody has the model but every slot is busy, **waits** for one,
+   up to `queue_timeout_secs` (30 s by default). A freed local slot is taken at
+   once; peers are asked again every 2 seconds, since they cannot say when they
+   have room. A request forwarded by a peer never waits (that peer does the
+   waiting, and may find room elsewhere meanwhile), and at most 64 requests wait
+   at once;
+4. otherwise returns `503` with `Retry-After` (or `404` at once if nobody has the
+   model).
 
 ### Choosing a peer
 
@@ -137,7 +144,8 @@ any peer that declines: cooled down and skipped. See
 ## Shutdown
 
 On SIGINT/SIGTERM (or Quit in the tray) a delegate stops gossiping, refuses new
-model requests with 503 (peers treat that as "try the next one"), and waits up to
+model requests with 503 (peers treat that as "try the next one"), answers 503 to
+requests that were waiting for a slot (within 2 seconds), and waits up to
 `shutdown_grace_secs` for requests in flight, local or forwarded, to finish.
 Anything still streaming after that is cut off with a broken stream.
 
@@ -165,6 +173,7 @@ The first sketch is in [`design/design.md`](../design/design.md), and
 [`design/plan.md`](../design/plan.md) records the decisions made while building it.
 Where the code differs:
 
-- "All full" returns **503** with `Retry-After`, not 500.
+- "All full" waits for a slot for a while, then returns **503** with
+  `Retry-After`, not 500.
 - The delegate ID is a persisted random UUID, not a hash of the MAC address.
 - The tray apps embed the delegate instead of talking to a separate daemon.

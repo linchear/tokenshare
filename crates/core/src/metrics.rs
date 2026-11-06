@@ -148,6 +148,12 @@ pub fn render(s: &AppState) -> String {
         "Requests this delegate is forwarding to peers right now.",
     );
     m.sample("tokenshare_forwarding", &[], s.pool.forwarding());
+    m.family(
+        "tokenshare_requests_waiting",
+        "gauge",
+        "Requests waiting for a free slot here or on a peer (see queue_timeout_secs).",
+    );
+    m.sample("tokenshare_requests_waiting", &[], s.pool.waiting());
 
     let hosts = s.table.snapshot();
     m.family(

@@ -1,7 +1,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::futures::Notified;
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 /// Bounds concurrent requests sent to ollama. "Full" is a local counter.
 ///
@@ -15,12 +16,34 @@ pub struct Pool {
     peer_sem: Arc<Semaphore>,
     peer_size: usize,
     forwarding: Arc<AtomicUsize>,
+    /// Woken whenever a slot is freed, for requests waiting for one.
+    freed: Arc<Notify>,
+    waiting: Arc<AtomicUsize>,
 }
 
 /// A slot in the pool, freed when dropped.
 pub struct Slot {
-    _local: OwnedSemaphorePermit,
-    _peer: Option<OwnedSemaphorePermit>,
+    local: Option<OwnedSemaphorePermit>,
+    peer: Option<OwnedSemaphorePermit>,
+    freed: Arc<Notify>,
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        // Give the permits back before waking anyone, so a waiter finds them.
+        self.peer.take();
+        self.local.take();
+        self.freed.notify_waiters();
+    }
+}
+
+/// Counts one request waiting for a slot, for as long as it is held.
+pub struct WaitGuard(Arc<AtomicUsize>);
+
+impl Drop for WaitGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// Counts one request we are forwarding to a peer, for as long as it is held.
@@ -47,6 +70,8 @@ impl Pool {
             peer_sem: Arc::new(Semaphore::new(peer_size)),
             peer_size,
             forwarding: Arc::new(AtomicUsize::new(0)),
+            freed: Arc::new(Notify::new()),
+            waiting: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -59,9 +84,27 @@ impl Pool {
             None
         };
         Some(Slot {
-            _local: self.sem.clone().try_acquire_owned().ok()?,
-            _peer: peer,
+            local: Some(self.sem.clone().try_acquire_owned().ok()?),
+            peer,
+            freed: self.freed.clone(),
         })
+    }
+
+    /// Resolves the next time any slot is freed. Call `enable` on it before
+    /// checking for a slot, so one freed in between is not missed.
+    pub fn freed(&self) -> Notified<'_> {
+        self.freed.notified()
+    }
+
+    /// Count a request as waiting for a slot while the guard is held.
+    pub fn wait_guard(&self) -> WaitGuard {
+        self.waiting.fetch_add(1, Ordering::SeqCst);
+        WaitGuard(self.waiting.clone())
+    }
+
+    /// Requests waiting for a slot (here or on a peer) right now.
+    pub fn waiting(&self) -> usize {
+        self.waiting.load(Ordering::SeqCst)
     }
 
     pub fn size(&self) -> usize {
@@ -109,6 +152,32 @@ impl Pool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_freed_slot_wakes_a_waiter_and_is_free_by_then() {
+        let p = Pool::new(1);
+        let held = p.try_acquire(false).unwrap();
+        let freed = p.freed();
+        tokio::pin!(freed);
+        freed.as_mut().enable();
+        assert!(p.try_acquire(false).is_none());
+        drop(held);
+        // Registered before the drop, so it is not missed.
+        tokio::time::timeout(std::time::Duration::from_secs(1), freed)
+            .await
+            .expect("woken");
+        assert!(p.try_acquire(false).is_some());
+    }
+
+    #[test]
+    fn waiting_is_counted_while_the_guard_is_held() {
+        let p = Pool::new(1);
+        let a = p.wait_guard();
+        let b = p.wait_guard();
+        assert_eq!(p.waiting(), 2);
+        drop((a, b));
+        assert_eq!(p.waiting(), 0);
+    }
 
     #[test]
     fn bounded_and_released() {
