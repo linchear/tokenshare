@@ -49,6 +49,11 @@ this is called out below.
   back or joins, when a peer refuses this machine's pool secret, and when the
   delegate cannot start. `notifications = false` or Settings turns them off. The
   dashboard tags a peer that refuses the secret.
+- **Busy requests wait.** When every slot that could serve a request is busy,
+  here and on peers, the request waits for one for up to `queue_timeout_secs`
+  (30 s) instead of getting `503` at once. The dashboard, `/_ts/status`
+  (`pool.waiting`) and metrics (`tokenshare_requests_waiting`) show how many are
+  waiting.
 
 ### Changed
 

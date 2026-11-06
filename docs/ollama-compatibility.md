@@ -18,7 +18,8 @@ ollama's own; otherwise point clients at `http://host:11343`.
 | everything else (`pull`, `create`, `delete`, `copy`, ...) | this machine's own ollama only; `503` without one |
 
 A model nobody has is a `404`, which is what makes the `ollama` CLI offer to pull
-it. If every candidate is busy you get `503` with `Retry-After`.
+it. If every candidate is busy the request waits for a free slot for up to
+`queue_timeout_secs` (30 s by default), then gets `503` with `Retry-After`.
 
 ## Details that matter to clients
 

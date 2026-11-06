@@ -82,6 +82,7 @@ scrape_configs:
 | `tokenshare_pool_slots`, `tokenshare_pool_slots_in_use` | gauge | | local ollama slots |
 | `tokenshare_pool_peer_slots`, `tokenshare_pool_peer_slots_in_use` | gauge | | the slots other delegates may use (`max_peer_requests`), and how many they use |
 | `tokenshare_forwarding` | gauge | | requests being forwarded to peers |
+| `tokenshare_requests_waiting` | gauge | | requests waiting for a free slot ([`queue_timeout_secs`](configuration.md)) |
 | `tokenshare_ollama_up`, `_models`, `_loaded_models` | gauge | `host` | per local ollama host |
 | `tokenshare_peers` | gauge | `status` | known peers by status |
 | `tokenshare_peer_up` | gauge | `peer`, `id` | 1 if online |
@@ -91,7 +92,7 @@ scrape_configs:
 | `tokenshare_upstream_inflight` | gauge | `target` | this delegate's requests in flight per upstream |
 | `tokenshare_upstream_responses_total` | counter | `route`, `target`, `result` | finished responses; `result` is `ok`, `error_status` or the stream problem (`no_final_chunk`, `upstream_error`, `cut_off`, `client_left_early`) |
 | `tokenshare_upstream_refusals_total` | counter | `target`, `reason` | `declined` or `unreachable` before streaming |
-| `tokenshare_requests_rejected_total` | counter | `reason` | `busy` (503), `not_found` (404) or `unauthorized` (401, any request without the pool secret) |
+| `tokenshare_requests_rejected_total` | counter | `reason` | `busy` (503, after waiting), `not_found` (404) or `unauthorized` (401, any request without the pool secret) |
 | `tokenshare_response_ttfb_seconds` | histogram | `route`, `target` | request to response headers |
 | `tokenshare_response_duration_seconds` | histogram | `route`, `target` | request to end of stream |
 | `tokenshare_tokens_total` | counter | `model`, `kind` | `prompt` and `completion` tokens from final chunks |

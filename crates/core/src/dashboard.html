@@ -221,6 +221,7 @@ function render(s) {
   const denied = rej.unauthorized || 0;
   $("tiles").innerHTML = [
     tile("Local slots", `${s.pool.in_use} / ${s.pool.size}`, `${s.pool.forwarding} forwarded to peers`
+      + (s.pool.waiting ? ` · <span class="warn">${s.pool.waiting} waiting</span>` : "")
       + (s.sharing && s.pool.peer_limit != null && s.pool.peer_limit < s.pool.size
         ? ` · peers ${s.pool.peer_in_use} / ${s.pool.peer_limit}` : "")),
     tile("Delegates online", `${online.length + 1} / ${peers.length + 1}`, "including this one"),

@@ -136,8 +136,9 @@ Full reference, file locations and the tray app's settings window:
 - **Routing.** The delegate reads `model` from the request, serves it from its own
   ollama if it has the model and a free slot, and otherwise tries online peers that
   have it, best first: peers that have not just refused, have free slots and have
-  the model already loaded in memory go ahead of the rest. Forwarded requests carry
-  a header so they are never forwarded twice.
+  the model already loaded in memory go ahead of the rest. When all of them are
+  busy, the request waits for a free slot (up to 30 s) instead of failing.
+  Forwarded requests carry a header so they are never forwarded twice.
 - **Streaming and failure.** The request body is buffered so it can be replayed to
   the next peer, but responses never are. A request is retried on another peer only
   before the first byte; once streaming has started, an upstream failure breaks the

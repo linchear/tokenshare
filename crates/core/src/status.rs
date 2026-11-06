@@ -108,6 +108,8 @@ pub fn status_json(s: &AppState) -> Value {
             "forwarding": s.pool.forwarding(),
             "peer_limit": s.pool.peer_size(),
             "peer_in_use": s.pool.peer_in_use(),
+            "waiting": s.pool.waiting(),
+            "queue_timeout_secs": s.config.queue_timeout_secs,
         },
         "shared_models": s.config.shared_models,
         "ollama": hosts,
