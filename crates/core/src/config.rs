@@ -78,6 +78,9 @@ pub struct Config {
     /// back or join, when a peer refuses the pool secret, and when this
     /// delegate cannot start.
     pub notifications: bool,
+    /// Tray app only (macOS): look for a new version once a day. Installing
+    /// one always waits for the user.
+    pub check_for_updates: bool,
 }
 
 impl Default for Config {
@@ -105,6 +108,7 @@ impl Default for Config {
             pool_secret: None,
             trust_localhost: true,
             notifications: true,
+            check_for_updates: true,
         }
     }
 }

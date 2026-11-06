@@ -19,6 +19,8 @@ use wry::{WebView, WebViewBuilder};
 use crate::icon;
 use crate::notices::{self, Notice, Notifier};
 use crate::settings::{self, Message};
+#[cfg(target_os = "macos")]
+use crate::update;
 use tokenshare_core::settings::{apply, Form};
 
 /// Everything the menu shows; only sent to the UI thread when it changes.
@@ -44,6 +46,15 @@ enum UserEvent {
     Menu(MenuEvent),
     /// A message from the settings page.
     Settings(String),
+    /// The result of looking for a new version; `manual` if the user asked.
+    #[cfg(target_os = "macos")]
+    UpdateChecked {
+        manual: bool,
+        result: Result<Option<Box<cargo_packager_updater::Update>>, String>,
+    },
+    /// A new version was (or could not be) put in place of this one.
+    #[cfg(target_os = "macos")]
+    UpdateInstalled(Result<(), String>),
 }
 
 /// The running delegate as the UI sees it. It changes when settings are saved.
@@ -53,6 +64,8 @@ struct Current {
     error: Option<String>,
     /// The `notifications` setting, known even when the delegate failed to start.
     notify: bool,
+    /// The `check_for_updates` setting.
+    check_updates: bool,
 }
 
 type Shared = Arc<Mutex<Current>>;
@@ -216,7 +229,9 @@ pub fn run() {
         c.state = running.as_ref().map(|r| r.state.clone());
         // Shown in the menu, so it says why rather than only pointing at the log.
         c.error = start_error;
-        c.notify = notifications_on(&config_path);
+        let file = file_config(&config_path);
+        c.notify = file.as_ref().is_none_or(|c| c.notifications);
+        c.check_updates = file.as_ref().is_none_or(|c| c.check_for_updates);
     }
 
     #[allow(unused_mut)]
@@ -244,6 +259,18 @@ pub fn run() {
     let settings_id: MenuId = settings_item.id().clone();
     let quit = MenuItem::new("Quit Token Share", true, None);
     let quit_id: MenuId = quit.id().clone();
+    #[cfg(target_os = "macos")]
+    let update_item = MenuItem::new(CHECK_FOR_UPDATES, true, None);
+    #[cfg(target_os = "macos")]
+    let update_id: MenuId = update_item.id().clone();
+    #[cfg(target_os = "macos")]
+    let updates = update::availability();
+    #[cfg(target_os = "macos")]
+    let mut updater = Updater::default();
+    #[cfg(target_os = "macos")]
+    if let update::Availability::Ready { exe, key, .. } = &updates {
+        spawn_update_checks(current.clone(), proxy.clone(), exe.clone(), key.clone());
+    }
     let mut tray: Option<TrayIcon> = None;
     let mut settings_window: Option<SettingsWindow> = None;
     // The "Forget this delegate" item of each listed peer -> that peer's id.
@@ -268,9 +295,20 @@ pub fn run() {
                     &PredefinedMenuItem::separator(),
                     &dashboard_item,
                     &settings_item,
-                    &PredefinedMenuItem::separator(),
-                    &quit,
                 ]);
+                #[cfg(target_os = "macos")]
+                match &updates {
+                    update::Availability::Ready { .. } => {
+                        let _ = menu.append(&update_item);
+                    }
+                    update::Availability::MoveToApplications => {
+                        update_item.set_text("Move Token Share to Applications to get updates");
+                        update_item.set_enabled(false);
+                        let _ = menu.append(&update_item);
+                    }
+                    update::Availability::Off => {}
+                }
+                let _ = menu.append_items(&[&PredefinedMenuItem::separator(), &quit]);
                 tray = TrayIconBuilder::new()
                     .with_menu(Box::new(menu))
                     .with_tooltip("Token Share")
@@ -410,6 +448,76 @@ pub fn run() {
                 settings_window = None;
                 set_regular_app(target, false);
             }
+            #[cfg(target_os = "macos")]
+            Event::UserEvent(UserEvent::Menu(e)) if e.id == update_id => {
+                let update::Availability::Ready { exe, key, .. } = &updates else {
+                    return;
+                };
+                let proxy = proxy.clone();
+                match updater.pending.clone() {
+                    Some(u) => {
+                        update_item.set_text("Installing update…");
+                        update_item.set_enabled(false);
+                        std::thread::spawn(move || {
+                            let result = update::install(&u);
+                            let _ = proxy.send_event(UserEvent::UpdateInstalled(result));
+                        });
+                    }
+                    None => {
+                        update_item.set_text("Checking for updates…");
+                        update_item.set_enabled(false);
+                        let (exe, key) = (exe.clone(), key.clone());
+                        std::thread::spawn(move || {
+                            let result = check_now(&exe, &key);
+                            let _ = proxy.send_event(UserEvent::UpdateChecked {
+                                manual: true,
+                                result,
+                            });
+                        });
+                    }
+                }
+            }
+            #[cfg(target_os = "macos")]
+            Event::UserEvent(UserEvent::UpdateChecked { manual, result }) => {
+                let notify = current.lock().unwrap().notify;
+                for n in updater.checked(manual, notify, result) {
+                    show(n);
+                }
+                update_item.set_text(updater.menu_text());
+                update_item.set_enabled(true);
+            }
+            #[cfg(target_os = "macos")]
+            Event::UserEvent(UserEvent::UpdateInstalled(result)) => match result {
+                Ok(()) => {
+                    tracing::info!("update installed, restarting");
+                    settings_window = None;
+                    if let Some(r) = running.take() {
+                        if let Err(e) = rt.block_on(r.stop(Duration::from_secs(5))) {
+                            tracing::warn!(error = %e, "shutdown before restarting the update");
+                        }
+                    }
+                    if let update::Availability::Ready { bundle, .. } = &updates {
+                        if let Err(e) = update::relaunch(bundle) {
+                            tracing::error!(error = %e, "cannot start the new version");
+                            show(Notice {
+                                title: "Token Share was updated".into(),
+                                body: "Open it again to start the new version.".into(),
+                            });
+                        }
+                    }
+                    tray.take();
+                    *control_flow = ControlFlow::Exit;
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "update failed");
+                    show(Notice {
+                        title: "Token Share could not update".into(),
+                        body: e,
+                    });
+                    update_item.set_text(updater.menu_text());
+                    update_item.set_enabled(true);
+                }
+            },
             Event::UserEvent(UserEvent::Menu(e)) if e.id == quit_id => {
                 settings_window = None;
                 if let Some(r) = running.take() {
@@ -470,7 +578,11 @@ fn save_and_restart(
 
     config.save(path).map_err(|e| invalid(format!("{e:#}")))?;
     tracing::info!("settings saved, restarting delegate");
-    current.lock().unwrap().notify = config.notifications;
+    {
+        let mut c = current.lock().unwrap();
+        c.notify = config.notifications;
+        c.check_updates = config.check_for_updates;
+    }
 
     if let Some(r) = running.take() {
         if let Err(e) = rt.block_on(r.stop(Duration::from_secs(5))) {
@@ -509,12 +621,9 @@ fn open_in_browser(url: &str) {
     }
 }
 
-/// Whether notifications are on in the config file (on if it cannot be read).
-fn notifications_on(config_path: &Option<PathBuf>) -> bool {
-    config_path
-        .as_ref()
-        .and_then(|p| Config::load(p).ok())
-        .is_none_or(|c| c.notifications)
+/// The config file, if it can be read; settings it holds default to on.
+fn file_config(config_path: &Option<PathBuf>) -> Option<Config> {
+    config_path.as_ref().and_then(|p| Config::load(p).ok())
 }
 
 /// What [`Notifier`] looks at, and whether notifications are on.
@@ -568,6 +677,110 @@ fn show(n: Notice) {
             .show()
         {
             tracing::warn!(error = %e, "cannot show notification");
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+const CHECK_FOR_UPDATES: &str = "Check for Updates…";
+
+/// What the app knows about updates, and what to tell the user.
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct Updater {
+    /// A newer version, found and not yet installed.
+    pending: Option<Box<cargo_packager_updater::Update>>,
+    /// The last version a notification was shown for, so a daily check
+    /// does not announce the same one every day.
+    announced: Option<String>,
+}
+
+#[cfg(target_os = "macos")]
+impl Updater {
+    /// Take in the result of a check, and say what is worth saying: always
+    /// when the user asked, and otherwise only news (with notifications on).
+    fn checked(
+        &mut self,
+        manual: bool,
+        notify: bool,
+        result: Result<Option<Box<cargo_packager_updater::Update>>, String>,
+    ) -> Vec<Notice> {
+        match result {
+            Ok(Some(u)) => {
+                let new = self.announced.as_deref() != Some(&u.version);
+                let out = if manual || (notify && new) {
+                    self.announced = Some(u.version.clone());
+                    vec![Notice {
+                        title: format!("Token Share {} is available", u.version),
+                        body: "Choose Install in the Token Share menu. The app restarts with it."
+                            .into(),
+                    }]
+                } else {
+                    vec![]
+                };
+                self.pending = Some(u);
+                out
+            }
+            Ok(None) if manual => vec![Notice {
+                title: "Token Share is up to date".into(),
+                body: format!("Version {} is the newest.", env!("CARGO_PKG_VERSION")),
+            }],
+            Ok(None) => vec![],
+            Err(e) => {
+                tracing::warn!(error = %e, manual, "update check failed");
+                if manual {
+                    vec![Notice {
+                        title: "Could not check for updates".into(),
+                        body: e,
+                    }]
+                } else {
+                    vec![]
+                }
+            }
+        }
+    }
+
+    fn menu_text(&self) -> String {
+        match &self.pending {
+            Some(u) => format!("Install Token Share {} and Restart", u.version),
+            None => CHECK_FOR_UPDATES.into(),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn check_now(
+    exe: &std::path::Path,
+    key: &str,
+) -> Result<Option<Box<cargo_packager_updater::Update>>, String> {
+    update::check(env!("CARGO_PKG_VERSION"), update::ENDPOINT, key, exe).map(|u| u.map(Box::new))
+}
+
+/// Look for a new version a little after starting and then once a day, while
+/// `check_for_updates` is on.
+#[cfg(target_os = "macos")]
+fn spawn_update_checks(
+    current: Shared,
+    proxy: EventLoopProxy<UserEvent>,
+    exe: PathBuf,
+    key: String,
+) {
+    std::thread::spawn(move || {
+        std::thread::sleep(update::FIRST_CHECK_AFTER);
+        loop {
+            if current.lock().unwrap().check_updates {
+                let result = check_now(&exe, &key);
+                if proxy
+                    .send_event(UserEvent::UpdateChecked {
+                        manual: false,
+                        result,
+                    })
+                    .is_err()
+                {
+                    return; // UI is gone
+                }
+            }
+            std::thread::sleep(update::CHECK_EVERY);
         }
     });
 }
@@ -660,6 +873,7 @@ mod tests {
         let current: Shared = Arc::new(Mutex::new(Current {
             state: None,
             notify: true,
+            check_updates: true,
             error: Some(
                 "port 11343 is already in use (is ollama running? it uses this port by default)"
                     .into(),
@@ -681,6 +895,66 @@ mod tests {
         assert!(text.starts_with("Cannot start: ollama host"));
     }
 
+    #[cfg(target_os = "macos")]
+    fn found(version: &str) -> Box<cargo_packager_updater::Update> {
+        Box::new(cargo_packager_updater::Update {
+            config: Default::default(),
+            body: None,
+            current_version: "0.1.0".into(),
+            version: version.into(),
+            date: None,
+            target: "macos".into(),
+            extract_path: "/Applications/Token Share.app".into(),
+            download_url: "https://example.com/a.tar.gz".parse().unwrap(),
+            signature: String::new(),
+            timeout: None,
+            headers: Default::default(),
+            format: cargo_packager_updater::UpdateFormat::App,
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_new_version_is_announced_once_and_offered_in_the_menu() {
+        let mut u = Updater::default();
+        assert_eq!(u.menu_text(), CHECK_FOR_UPDATES);
+        let n = u.checked(false, true, Ok(Some(found("0.2.0"))));
+        assert_eq!(n[0].title, "Token Share 0.2.0 is available");
+        assert_eq!(u.menu_text(), "Install Token Share 0.2.0 and Restart");
+        // The next day's check finds the same version: nothing new to say.
+        assert!(u.checked(false, true, Ok(Some(found("0.2.0")))).is_empty());
+        // Asking again always answers.
+        assert_eq!(u.checked(true, true, Ok(Some(found("0.2.0")))).len(), 1);
+        assert_eq!(u.checked(false, true, Ok(Some(found("0.3.0")))).len(), 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn automatic_checks_are_quiet_unless_there_is_news() {
+        let mut u = Updater::default();
+        assert!(u.checked(false, true, Ok(None)).is_empty());
+        assert!(u.checked(false, true, Err("offline".into())).is_empty());
+        assert!(
+            u.checked(false, false, Ok(Some(found("0.2.0")))).is_empty(),
+            "notifications off"
+        );
+        assert_eq!(
+            u.menu_text(),
+            "Install Token Share 0.2.0 and Restart",
+            "still offered"
+        );
+        // A check the user asked for always says how it went.
+        let mut u = Updater::default();
+        assert_eq!(
+            u.checked(true, false, Ok(None))[0].title,
+            "Token Share is up to date"
+        );
+        assert_eq!(
+            u.checked(true, false, Err("offline".into()))[0].title,
+            "Could not check for updates"
+        );
+    }
+
     #[test]
     fn a_running_delegate_has_a_dashboard() {
         let state = AppState::new("test".into(), Config::default(), None);
@@ -688,6 +962,7 @@ mod tests {
             state: Some(state),
             error: None,
             notify: true,
+            check_updates: true,
         }));
         assert!(snapshot(&current).running);
     }

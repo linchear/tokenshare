@@ -101,7 +101,9 @@ There are no binary releases yet, so build from source. Scripts package the resu
 | Windows (x64) | `packaging/windows/build-zip.sh` | a zip with the taskbar app, the daemon and `WebView2Loader.dll` |
 | Linux (x64) | `packaging/linux/build-deb.sh` | a `.deb` with the daemon, a systemd user unit and a man page |
 
-Details and prerequisites: [Building and packaging](docs/packaging.md). On Linux
+Details and prerequisites: [Building and packaging](docs/packaging.md). The macOS
+app updates itself from GitHub releases once installed
+([updates](docs/packaging.md#updates)). On Linux
 see also the [Linux guide](docs/linux.md).
 
 ## Configuration
