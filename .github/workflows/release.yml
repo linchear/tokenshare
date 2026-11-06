@@ -13,16 +13,59 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Installed apps compare their own version with the release's, so the
+      # tag must match the version the app is built with.
+      - name: Check the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 |
+            python3 -c 'import sys,json; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="tokenshare-tray"))')
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the app version $version (Cargo.toml)"
+            exit 1
+          fi
       - run: packaging/macos/build-app.sh
       # Ad-hoc signature only (no Apple developer account): Gatekeeper still
       # asks for a right-click > Open the first time.
       - run: codesign --force --deep --sign - "target/release/bundle/Token Share.app"
       - run: ditto -c -k --keepParent "Token Share.app" "$GITHUB_WORKSPACE/tokenshare-macos-arm64.zip"
         working-directory: target/release/bundle
+      # The update installed apps download. No extended attributes: they would
+      # turn into stray ._ files inside the bundle and break its signature.
+      - run: COPYFILE_DISABLE=1 tar --no-mac-metadata -czf "$GITHUB_WORKSPACE/tokenshare-macos-arm64.app.tar.gz" "Token Share.app"
+        working-directory: target/release/bundle
+      # Sign it with the project's update key and describe it in latest.json,
+      # which installed apps read from the newest release. Without the
+      # TOKENSHARE_UPDATE_KEY secret the release is published as before, but
+      # installed apps do not see it. See docs/packaging.md#updates.
+      - name: Sign the update
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          UPDATE_KEY: ${{ secrets.TOKENSHARE_UPDATE_KEY }}
+        run: |
+          if [ -z "$UPDATE_KEY" ]; then
+            echo "::warning::No TOKENSHARE_UPDATE_KEY secret: installed apps will not be offered this release"
+            exit 0
+          fi
+          brew install minisign
+          umask 077
+          printf '%s\n' "$UPDATE_KEY" > "$RUNNER_TEMP/update.key"
+          archive=tokenshare-macos-arm64.app.tar.gz
+          minisign -S -s "$RUNNER_TEMP/update.key" -m "$archive" -x "$RUNNER_TEMP/update.minisig" \
+            -t "Token Share $GITHUB_REF_NAME" < /dev/null
+          rm -f "$RUNNER_TEMP/update.key"
+          base64 < "$RUNNER_TEMP/update.minisig" | tr -d '\n' > "$archive.sig"
+          packaging/update-manifest.py "$GITHUB_REF_NAME" \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$archive" \
+            "$(cat "$archive.sig")" > latest.json
       - uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: tokenshare-macos-arm64.zip
+          path: |
+            tokenshare-macos-arm64.zip
+            tokenshare-macos-arm64.app.tar.gz
+            tokenshare-macos-arm64.app.tar.gz.sig
+            latest.json
 
   windows:
     runs-on: windows-latest

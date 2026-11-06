@@ -24,6 +24,7 @@ pool_size = 3
 | `pool_secret` | none | Shared secret every delegate in the pool must use ([see below](#pool-secret)). The `TOKENSHARE_POOL_SECRET` environment variable overrides it |
 | `trust_localhost` | `true` | With a `pool_secret`, let connections from this machine in without it |
 | `notifications` | `true` | Tray app only: desktop notifications ([see below](#notifications)) |
+| `check_for_updates` | `true` | macOS app only: look for a new version once a day ([updates](packaging.md#updates)) |
 | `poll_interval_secs` | `10` | How often to refresh local models |
 | `rejoin_retry_secs` | `300` | Wait before retrying when no delegate answered |
 | `keepalive_interval_secs` | `30` | Keepalive period |
@@ -229,12 +230,14 @@ The icon is a round badge with a symbol, so state does not depend on color alone
 
 "Available" means a model listed by this machine's ollama or by an online peer; a
 reachable ollama with nothing installed does not count. The menu shows state, pool
-usage and the delegate list. Quit waits up to 5 seconds for in-flight requests.
+usage and the delegate list. Quit waits up to 5 seconds for in-flight requests. On
+macOS, **Check for Updates…** looks for a new version and, when there is one,
+becomes **Install Token Share *x.y.z* and Restart** ([updates](packaging.md#updates)).
 
 **Settings.** Choose *Settings…* in the tray menu to edit the name, the first
 contact, ollama hosts (one per line), whether to share your ollama and its
 [lending limits](#lending-limits), the pool secret, connections to ollama, listen
-port, notifications and, under Advanced, the advertise URL and ollama port. *Save & Restart* validates the values,
+port, notifications, update checks and, under Advanced, the advertise URL and ollama port. *Save & Restart* validates the values,
 writes the config file and restarts the delegate with them; requests in flight get a
 few seconds to finish. Other options (intervals, TTL, grace period) are kept as they
 are in the file, so edit it directly for those. On macOS the app shows a Dock icon

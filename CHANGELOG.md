@@ -54,6 +54,12 @@ this is called out below.
   (30 s) instead of getting `503` at once. The dashboard, `/_ts/status`
   (`pool.waiting`) and metrics (`tokenshare_requests_waiting`) show how many are
   waiting.
+- **The macOS app updates itself.** It looks for a new release once a day and
+  from **Check for Updates…** in its menu, and installs one when you choose
+  **Install … and Restart**. Updates are signed, and the app refuses one that is
+  not signed with the project's key. `check_for_updates = false` or Settings turns
+  the daily check off. Releases attach `latest.json` and a signed
+  `.app.tar.gz` for it.
 
 ### Changed
 

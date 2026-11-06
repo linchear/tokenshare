@@ -40,6 +40,9 @@ pub struct Form {
     /// Desktop notifications from the tray app.
     #[serde(default = "yes")]
     pub notifications: bool,
+    /// Look for a new version of the tray app once a day.
+    #[serde(default = "yes")]
+    pub check_for_updates: bool,
 }
 
 fn yes() -> bool {
@@ -65,6 +68,7 @@ impl Form {
                 .unwrap_or_default(),
             shared_models: c.shared_models.join(", "),
             notifications: c.notifications,
+            check_for_updates: c.check_for_updates,
         }
     }
 }
@@ -125,6 +129,7 @@ pub fn apply(form: &Form, base: &Config) -> Result<Config, Vec<String>> {
     c.share_with_peers = form.share_with_peers;
     c.masquerade = form.masquerade;
     c.notifications = form.notifications;
+    c.check_for_updates = form.check_for_updates;
     match form.ollama_port.trim().parse::<u16>() {
         Ok(p) if p > 0 => c.ollama_port = p,
         _ => errors.push("Ollama port must be a number from 1 to 65535".into()),
@@ -269,6 +274,10 @@ mod tests {
         }))
         .unwrap();
         assert!(old.notifications);
+        assert!(old.check_for_updates);
+        let mut f = form();
+        f.check_for_updates = false;
+        assert!(!apply(&f, &Config::default()).unwrap().check_for_updates);
     }
 
     #[test]
