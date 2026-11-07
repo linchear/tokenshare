@@ -30,6 +30,14 @@ pub struct Rank {
     pub inflight: u32,
 }
 
+impl Rank {
+    /// Has the model loaded, has room, and has not just refused: a request
+    /// sent there should start right away.
+    pub fn ready(&self) -> bool {
+        !self.cooling && !self.full && !self.cold
+    }
+}
+
 pub fn rank_of(peer: &DelegateEntry, model: &str, activity: &Activity) -> Rank {
     let inflight = activity.inflight(&peer.url);
     let full = peer

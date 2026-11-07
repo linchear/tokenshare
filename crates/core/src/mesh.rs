@@ -160,7 +160,7 @@ pub fn is_local(ip: IpAddr) -> bool {
 /// Whether a browser sent this request from a page served by this delegate
 /// (or it came from something that is not a browser, which sends no `Origin`).
 /// Stops other web pages open on this machine from acting on the delegate.
-fn same_origin(headers: &HeaderMap) -> bool {
+pub(crate) fn same_origin(headers: &HeaderMap) -> bool {
     let Some(origin) = headers.get(header::ORIGIN) else {
         return true;
     };

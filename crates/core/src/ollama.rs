@@ -128,6 +128,16 @@ impl LocalTable {
             .map(|e| e.host.clone())
     }
 
+    /// Whether a host that is up has `model` loaded in memory.
+    pub fn is_loaded(&self, model: &str) -> bool {
+        self.inner
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|e| e.up)
+            .any(|e| e.loaded.iter().any(|m| model_matches(model, m)))
+    }
+
     /// Models loaded in memory on any host, deduplicated.
     pub fn loaded_models(&self) -> Vec<String> {
         let mut out: Vec<String> = vec![];

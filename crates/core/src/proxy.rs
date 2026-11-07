@@ -242,6 +242,10 @@ pub fn router_for(state: Arc<AppState>, face: Face) -> Router {
         .route("/_ts/keepalive", post(mesh::keepalive))
         .route("/_ts/table", get(mesh::table))
         .route("/_ts/forget", post(mesh::forget))
+        .route("/_ts/warm", post(crate::warmup::warm))
+        // Browsers ask for it on their own; it is not ollama's business, and
+        // it is not a response worth listing.
+        .route("/favicon.ico", get(|| async { StatusCode::NO_CONTENT }))
         .fallback(proxy)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -615,6 +619,7 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
             ttfb_ms = start.elapsed().as_millis() as u64, "request"
         );
     };
+    let peer_meta = |url: &str| meta("peer", url, Some(&model));
 
     // A request from a client waits for a slot when everything is busy; one
     // forwarded by a peer is refused at once, so that peer can try another.
@@ -644,10 +649,47 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
             return shutting_down();
         }
 
-        // 1. Serve locally if we have the model and a free pool slot.
-        // (A forwarded request got here past the sharing check above.)
+        // A forwarded request got here past the sharing check above.
         let has_local = on_ollama_port || forwarded;
         let local_host = s.table.host_for_model(&model).filter(|_| has_local);
+
+        // 0. With `prefer_warm_peers`, when the model is not loaded here, a
+        // peer that has it loaded and has room goes first: starting it here
+        // would wait for the model to load.
+        if ask_peers
+            && !forwarded
+            && needs_slot
+            && s.config.prefer_warm_peers
+            && local_host.is_some()
+            && !s.table.is_loaded(&model)
+        {
+            let warm: Vec<_> = routing::order(
+                s.delegates.peers_with_model(&model, &visited),
+                &model,
+                &s.activity,
+            )
+            .into_iter()
+            .filter(|p| routing::rank_of(p, &model, &s.activity).ready())
+            .collect();
+            if !warm.is_empty() {
+                info!(path, model, "cold here, trying a peer that has it loaded");
+                if let Some(r) = try_peers(
+                    &s,
+                    &out,
+                    warm,
+                    &path_and_query,
+                    &visited_header,
+                    &peer_meta,
+                    &log,
+                )
+                .await
+                {
+                    return r;
+                }
+            }
+        }
+
+        // 1. Serve locally if we have the model and a free pool slot.
         if let Some(host) = &local_host {
             let permit = if needs_slot {
                 s.pool.try_acquire(forwarded).map(Some)
@@ -655,7 +697,6 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
                 Some(None)
             };
             if let Some(permit) = permit {
-                drop(waiting.take());
                 let flight = s.activity.start(host);
                 return match out.send(format!("{host}{path_and_query}"), None).await {
                     Ok(resp) => {
@@ -692,54 +733,19 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
                 &s.activity,
             );
             candidates_exist |= !peers.is_empty();
-            // Counts as in-flight from the first attempt until the stream ends.
-            let mut guard = Some(s.pool.track_forward());
-            for peer in peers.into_iter().filter(|_| ask_peers) {
-                let flight = s.activity.start(&peer.url);
-                // Retrying is safe only until the first byte reaches the client.
-                match out
-                    .send(
-                        format!("{}{path_and_query}", peer.url),
-                        Some(&visited_header),
-                    )
-                    .await
+            if ask_peers {
+                if let Some(r) = try_peers(
+                    &s,
+                    &out,
+                    peers,
+                    &path_and_query,
+                    &visited_header,
+                    &peer_meta,
+                    &log,
+                )
+                .await
                 {
-                    Ok(resp) if resp.status().is_success() => {
-                        drop(waiting.take());
-                        log(&peer.url, resp.status().as_u16());
-                        s.activity.secret_accepted_by(&peer.url);
-                        return with_served_by(
-                            stream_response(
-                                resp,
-                                (guard.take(), flight),
-                                s.cutoff.subscribe(),
-                                StreamMeta {
-                                    ledger: Some((
-                                        s.ledger.clone(),
-                                        peer.id.clone(),
-                                        Direction::Borrowed,
-                                    )),
-                                    ..meta("peer", &peer.url, Some(&model))
-                                },
-                            ),
-                            &peer,
-                        );
-                    }
-                    Ok(resp) => {
-                        if resp.status() == StatusCode::UNAUTHORIZED {
-                            s.activity.secret_refused_by(&peer.url);
-                        }
-                        s.activity.refused(&peer.url, Refusal::Declined);
-                        info!(peer = %peer.url, status = resp.status().as_u16(), "peer declined, trying next")
-                    }
-                    Err(e) => {
-                        s.activity.refused(&peer.url, Refusal::Unreachable);
-                        warn!(peer = %peer.url, error = %e, "peer unreachable, trying next");
-                        if e.is_connect() {
-                            s.delegates
-                                .set_status(&peer.id, crate::table::Status::Unavailable);
-                        }
-                    }
+                    return r;
                 }
             }
         }
@@ -769,6 +775,66 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
             _ = tokio::time::sleep(PEER_RETRY.min(deadline - now)) => ask_peers = true,
         }
     }
+}
+
+/// Try `peers` in turn with the request; the first that accepts streams its
+/// response back. `None` if each declined or could not be reached (each is
+/// then cooling down for routing). Retrying is safe only until the first
+/// byte reaches the client, which is why a peer must accept before we return.
+async fn try_peers(
+    s: &AppState,
+    out: &Outbound<'_>,
+    peers: Vec<DelegateEntry>,
+    path_and_query: &str,
+    visited_header: &str,
+    meta: &(dyn Fn(&str) -> StreamMeta + Sync),
+    log: &(dyn Fn(&str, u16) + Sync),
+) -> Option<Response> {
+    // Counts as in-flight from the first attempt until the stream ends.
+    let mut guard = Some(s.pool.track_forward());
+    for peer in peers {
+        let flight = s.activity.start(&peer.url);
+        match out
+            .send(
+                format!("{}{path_and_query}", peer.url),
+                Some(visited_header),
+            )
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                log(&peer.url, resp.status().as_u16());
+                s.activity.secret_accepted_by(&peer.url);
+                return Some(with_served_by(
+                    stream_response(
+                        resp,
+                        (guard.take(), flight),
+                        s.cutoff.subscribe(),
+                        StreamMeta {
+                            ledger: Some((s.ledger.clone(), peer.id.clone(), Direction::Borrowed)),
+                            ..meta(&peer.url)
+                        },
+                    ),
+                    &peer,
+                ));
+            }
+            Ok(resp) => {
+                if resp.status() == StatusCode::UNAUTHORIZED {
+                    s.activity.secret_refused_by(&peer.url);
+                }
+                s.activity.refused(&peer.url, Refusal::Declined);
+                info!(peer = %peer.url, status = resp.status().as_u16(), "peer declined, trying next")
+            }
+            Err(e) => {
+                s.activity.refused(&peer.url, Refusal::Unreachable);
+                warn!(peer = %peer.url, error = %e, "peer unreachable, trying next");
+                if e.is_connect() {
+                    s.delegates
+                        .set_status(&peer.id, crate::table::Status::Unavailable);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Union of models across this machine and all online peers.

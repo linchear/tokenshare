@@ -12,7 +12,9 @@ use tokenshare_core::daemon::{self, Running};
 use tokenshare_core::status::{health, Health};
 use tokenshare_core::table::Status;
 use tokenshare_core::{AppState, Config};
-use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
+use tray_icon::menu::{
+    CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
+};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 use wry::{WebView, WebViewBuilder};
 
@@ -257,6 +259,10 @@ pub fn run() {
     let dashboard_id: MenuId = dashboard_item.id().clone();
     let settings_item = MenuItem::new("Settings…", config_path.is_some(), None);
     let settings_id: MenuId = settings_item.id().clone();
+    // Toggles take effect at once and are saved without restarting the delegate.
+    let notify_item =
+        CheckMenuItem::new("Notifications", true, current.lock().unwrap().notify, None);
+    let notify_id: MenuId = notify_item.id().clone();
     let quit = MenuItem::new("Quit Token Share", true, None);
     let quit_id: MenuId = quit.id().clone();
     #[cfg(target_os = "macos")]
@@ -294,6 +300,7 @@ pub fn run() {
                     &peers,
                     &PredefinedMenuItem::separator(),
                     &dashboard_item,
+                    &notify_item,
                     &settings_item,
                 ]);
                 #[cfg(target_os = "macos")]
@@ -371,6 +378,17 @@ pub fn run() {
                     None => tracing::warn!("delegate is not running; no dashboard to open"),
                 }
             }
+            Event::UserEvent(UserEvent::Menu(e)) if e.id == notify_id => {
+                let on = notify_item.is_checked();
+                current.lock().unwrap().notify = on;
+                match save_notifications(&config_path, on) {
+                    Ok(()) => tracing::info!(on, "notifications toggled from the menu"),
+                    Err(e) => {
+                        // Still in effect until the app restarts.
+                        tracing::warn!(error = %e, "cannot save the notifications setting")
+                    }
+                }
+            }
             Event::UserEvent(UserEvent::Menu(e)) if e.id == settings_id => match &settings_window {
                 Some(w) => w.window.set_focus(),
                 None => {
@@ -426,6 +444,7 @@ pub fn run() {
                             Ok(()) => {
                                 settings_window = None;
                                 set_regular_app(target, false);
+                                notify_item.set_checked(current.lock().unwrap().notify);
                             }
                             Err(SaveError::Invalid(errors)) => show_errors(w, &errors),
                             Err(SaveError::Warning(text)) => {
@@ -619,6 +638,15 @@ fn open_in_browser(url: &str) {
     if let Err(e) = result {
         tracing::error!(error = %e, url, "cannot open the dashboard");
     }
+}
+
+/// Save `notifications = on` in the config file, leaving the rest as it is.
+/// The delegate does not use it, so it needs no restart.
+fn save_notifications(config_path: &Option<PathBuf>, on: bool) -> Result<(), String> {
+    let path = config_path.as_ref().ok_or("no config location")?;
+    let mut config = Config::load(path).map_err(|e| format!("{e:#}"))?;
+    config.notifications = on;
+    config.save(path).map_err(|e| format!("{e:#}"))
 }
 
 /// The config file, if it can be read; settings it holds default to on.
@@ -953,6 +981,30 @@ mod tests {
             u.checked(true, false, Err("offline".into()))[0].title,
             "Could not check for updates"
         );
+    }
+
+    #[test]
+    fn the_notifications_toggle_saves_only_that_setting() {
+        let dir = std::env::temp_dir().join(format!("ts-notify-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let config = Config {
+            pool_size: 7,
+            fc: Some("http://gpu-box:11343".into()),
+            ..Config::default()
+        };
+        config.save(&path).unwrap();
+        save_notifications(&Some(path.clone()), false).unwrap();
+        let saved = Config::load(&path).unwrap();
+        assert!(!saved.notifications);
+        assert_eq!(
+            (saved.pool_size, saved.fc.as_deref()),
+            (7, Some("http://gpu-box:11343"))
+        );
+        save_notifications(&Some(path.clone()), true).unwrap();
+        assert!(Config::load(&path).unwrap().notifications);
+        assert!(save_notifications(&None, true).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

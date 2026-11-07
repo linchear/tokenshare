@@ -13,6 +13,7 @@ pub mod settings;
 pub mod status;
 pub mod streamlog;
 pub mod table;
+pub mod warmup;
 
 pub use config::Config;
 pub use proxy::{poll_local_table, router, router_for, serve, serve_face, AppState};

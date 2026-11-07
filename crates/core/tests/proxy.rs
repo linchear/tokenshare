@@ -178,3 +178,34 @@ async fn status_reports_pool() {
     assert_eq!(body["pool"]["size"], 3);
     assert_eq!(body["ollama"][0]["up"], true);
 }
+
+#[tokio::test]
+async fn the_favicon_is_answered_here_and_not_listed() {
+    let n = node(NodeOpts {
+        models: &["gemma2:latest"],
+        ..Default::default()
+    })
+    .await;
+    let r = reqwest::get(format!("{}/favicon.ico", n.url))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 204);
+    let status: serde_json::Value = reqwest::get(format!("{}/_ts/status", n.url))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        status["activity"]["recent"].as_array().unwrap().is_empty(),
+        "{}",
+        status["activity"]["recent"]
+    );
+    let page = reqwest::get(format!("{}/_ts/dashboard", n.url))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(page.contains("rel=\"icon\""));
+}

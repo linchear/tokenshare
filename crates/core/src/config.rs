@@ -60,6 +60,11 @@ pub struct Config {
     /// peers), how long the request waits for one before it is answered 503.
     /// 0 answers 503 at once.
     pub queue_timeout_secs: u64,
+    /// When the model a request asks for is not loaded here but a peer has it
+    /// loaded and has room, send the request there instead of loading it
+    /// here. Off by default: it trades this machine's own resources for
+    /// skipping the load.
+    pub prefer_warm_peers: bool,
     /// Forget delegates not heard from for this long (their own `last_seen`).
     /// Live delegates refresh it every keepalive, so only dead ones age out; this
     /// delegate refuses stale entries from others too, so they do not come back.
@@ -104,6 +109,7 @@ impl Default for Config {
             sync_interval_secs: 60,
             shutdown_grace_secs: 30,
             queue_timeout_secs: 30,
+            prefer_warm_peers: false,
             peer_expiry_secs: 86_400,
             pool_secret: None,
             trust_localhost: true,

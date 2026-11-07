@@ -75,6 +75,9 @@
     <input id="adv" placeholder="detected automatically">
     <div class="hint">How other delegates reach this machine. Set it only if the detected address is wrong, for example behind NAT.</div>
 
+    <label class="check"><input type="checkbox" id="warm"> <span>Prefer a peer that already has the model loaded</span></label>
+    <div class="hint">Instead of loading a model here, send the request to a peer that has it in memory and room for it. Saves the wait for a load, at the cost of using the peer.</div>
+
     <label for="oport">Ollama port</label>
     <input id="oport" inputmode="numeric" placeholder="11434">
     <div class="hint">The port ollama clients use when masquerading. The default, 11434, is ollama's own, so apps already talking to ollama need no change. Choose another if a local ollama stays on 11434.</div>
@@ -95,6 +98,7 @@
   $('masq').checked = init.masquerade;
   $('notify').checked = init.notifications !== false;
   $('updates').checked = init.check_for_updates !== false;
+  $('warm').checked = !!init.prefer_warm_peers;
   // Only the macOS app updates itself.
   if (!/Mac/.test(navigator.platform)) $('updates-row').style.display = 'none';
   $('oport').value = init.ollama_port;
@@ -151,7 +155,8 @@
       share_with_peers: $('share').checked, masquerade: $('masq').checked,
       ollama_port: $('oport').value, pool_secret: $('secret').value, name: $('name').value,
       max_peer_requests: $('maxpeer').value, shared_models: $('shared').value,
-      notifications: $('notify').checked, check_for_updates: $('updates').checked } });
+      notifications: $('notify').checked, check_for_updates: $('updates').checked,
+      prefer_warm_peers: $('warm').checked } });
   };
   // WKWebView in an app without a working Edit menu ignores Cmd+A/C/X/V, so on
   // macOS we do them ourselves. Copy and paste go through the host's clipboard.
