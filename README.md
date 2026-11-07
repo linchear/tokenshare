@@ -93,7 +93,9 @@ the machine knows about.
 
 ## Install
 
-There are no binary releases yet, so build from source. Scripts package the result:
+Download the macOS app, the Windows zip or the Linux `.deb` from the
+[releases page](https://github.com/linchear/tokenshare/releases), or build from
+source. Scripts package the result:
 
 | Platform | Command | Output |
 | --- | --- | --- |
@@ -189,7 +191,7 @@ Dashboard**), and `/_ts/metrics` exposes it to Prometheus. See
 
 ## Status
 
-This is early software, version 0.1. It was built and exercised mainly on **macOS
+This is early software, version 0.3. It was built and exercised mainly on **macOS
 (Apple Silicon)**. The Windows and Linux builds are cross-compiled and a CI workflow
 for all three platforms is included, but they have had far less hands-on use. Bug
 reports with the `response` log lines around the problem are the most useful kind.

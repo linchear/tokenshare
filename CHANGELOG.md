@@ -10,6 +10,8 @@ this is called out below.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-06
+
 ### Added
 
 - **Load-aware routing.** Delegates publish their free slots and the models loaded
@@ -92,5 +94,6 @@ peer-to-peer mesh, with the ollama and OpenAI-compatible APIs, masquerade on
 ollama's port, client-only and not-sharing modes, the `delegates` and `forget`
 commands, and tray apps for macOS and Windows.
 
-[Unreleased]: https://github.com/linchear/tokenshare/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/linchear/tokenshare/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/linchear/tokenshare/compare/v0.1.0...v0.3.0
 [0.1.0]: https://github.com/linchear/tokenshare/releases/tag/v0.1.0

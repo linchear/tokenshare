@@ -3875,7 +3875,7 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tokenshare"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3890,7 +3890,7 @@ dependencies = [
 
 [[package]]
 name = "tokenshare-core"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3912,7 +3912,7 @@ dependencies = [
 
 [[package]]
 name = "tokenshare-tray"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arboard",
