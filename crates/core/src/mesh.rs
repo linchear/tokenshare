@@ -35,6 +35,11 @@ pub struct JoinRequest {
     /// model info send none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub model_info: Vec<crate::table::ModelMeta>,
+    /// The joiner's Token Share and ollama versions, if it says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ollama_version: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -114,6 +119,11 @@ pub async fn join(
     let mut entry = DelegateEntry::new(req.id, url, req.models);
     entry.name = req.name.as_deref().and_then(crate::table::clean_name);
     entry.model_info = crate::table::clean_model_info(req.model_info, &entry.models);
+    entry.version = req.version.as_deref().and_then(crate::table::clean_version);
+    entry.ollama_version = req
+        .ollama_version
+        .as_deref()
+        .and_then(crate::table::clean_version);
     info!(id = %entry.id, url = %entry.url, "delegate joined");
     s.delegates.merge([entry.clone()]);
     tokio::spawn(announce_new_member(s.clone(), entry.clone()));
@@ -271,6 +281,8 @@ pub async fn join_via(s: &AppState, url: &str) -> Result<()> {
         models: me.models,
         name: me.name,
         model_info: me.model_info,
+        version: me.version,
+        ollama_version: me.ollama_version,
     };
     let resp = s
         .to_peer(s.client.post(format!("{url}/_ts/join")))

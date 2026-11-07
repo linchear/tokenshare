@@ -28,6 +28,8 @@ pub struct HostEntry {
     /// Models loaded in memory right now (`/api/ps`), so a request starts
     /// without a load. Empty when unknown.
     pub loaded: Vec<String>,
+    /// What `/api/version` says, if it answers.
+    pub version: Option<String>,
 }
 
 /// The ollama instances directly reachable from this delegate, and their models.
@@ -60,6 +62,7 @@ impl LocalTable {
                 up: false,
                 models: vec![],
                 loaded: vec![],
+                version: None,
             })
             .collect();
         Self {
@@ -80,21 +83,25 @@ impl LocalTable {
             let models = fetch_models(client, h).await;
             // Which models are warm is a hint for routing; an ollama that cannot
             // say (an older one, or a stand-in) is simply treated as all cold.
-            let loaded = match &models {
-                Ok(_) => fetch_loaded(client, h).await.unwrap_or_default(),
-                Err(_) => vec![],
+            let (loaded, version) = match &models {
+                Ok(_) => (
+                    fetch_loaded(client, h).await.unwrap_or_default(),
+                    fetch_version(client, h).await.ok(),
+                ),
+                Err(_) => (vec![], None),
             };
-            (models, loaded)
+            (models, loaded, version)
         }))
         .await;
         let mut guard = self.inner.write().unwrap();
-        for (entry, (result, loaded)) in guard.iter_mut().zip(results) {
+        for (entry, (result, loaded, version)) in guard.iter_mut().zip(results) {
             match result {
                 Ok(models) => {
                     debug!(host = %entry.host, models = models.len(), loaded = loaded.len(), "ollama host up");
                     entry.up = true;
                     entry.models = models;
                     entry.loaded = loaded;
+                    entry.version = version;
                 }
                 Err(e) => {
                     if entry.up {
@@ -103,6 +110,7 @@ impl LocalTable {
                     entry.up = false;
                     entry.models.clear();
                     entry.loaded.clear();
+                    entry.version = None;
                 }
             }
         }
@@ -131,6 +139,16 @@ impl LocalTable {
             }
         }
         out
+    }
+
+    /// The version of the first host that is up and says what it runs.
+    pub fn ollama_version(&self) -> Option<String> {
+        self.inner
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|e| e.up)
+            .find_map(|e| e.version.clone())
     }
 
     pub fn first_up(&self) -> Option<String> {
@@ -237,6 +255,22 @@ async fn fetch_models(client: &reqwest::Client, host: &str) -> anyhow::Result<Ve
                 .collect()
         })
         .unwrap_or_default())
+}
+
+/// What `host` says its version is, from `/api/version`.
+async fn fetch_version(client: &reqwest::Client, host: &str) -> anyhow::Result<String> {
+    let body: Value = client
+        .get(format!("{host}/api/version"))
+        .timeout(Duration::from_secs(3))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    body["version"]
+        .as_str()
+        .and_then(crate::table::clean_version)
+        .ok_or_else(|| anyhow::anyhow!("no version"))
 }
 
 /// Names of the models `host` has loaded in memory, from `/api/ps`.

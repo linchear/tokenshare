@@ -32,6 +32,12 @@ pub struct DelegateEntry {
     /// Absent from delegates that predate names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The Token Share version it runs. Absent from delegates that predate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// The version of its (first) ollama, if it has one and could say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ollama_version: Option<String>,
     pub models: Vec<String>,
     /// What ollama reports about each of `models` beyond its name, so peers
     /// can list them with real sizes and tell builds apart. Absent from
@@ -75,6 +81,8 @@ impl DelegateEntry {
             status: Status::Online,
             kind: "delegate".into(),
             name: None,
+            version: None,
+            ollama_version: None,
             models,
             model_info: vec![],
             load: None,
@@ -232,6 +240,21 @@ pub fn clean_name(raw: &str) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
+/// Longest version string kept.
+const MAX_VERSION_CHARS: usize = 40;
+
+/// A version from another machine, if it looks like one (`0.2.0`,
+/// `0.12.3-rc1`, `1.0.0+abc`): safe to show anywhere and to compare.
+pub fn clean_version(raw: &str) -> Option<String> {
+    let v = raw.trim().trim_start_matches('v');
+    let ok = !v.is_empty()
+        && v.len() <= MAX_VERSION_CHARS
+        && v.starts_with(|c: char| c.is_ascii_digit())
+        && v.chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".-+".contains(c));
+    ok.then(|| v.to_string())
+}
+
 /// Where forgotten delegates are kept, next to the table file.
 fn forgotten_path(table_path: &std::path::Path) -> PathBuf {
     table_path.with_file_name("forgotten.json")
@@ -380,6 +403,14 @@ impl DelegateTable {
         self.persist();
     }
 
+    /// Set the versions we publish: ours, and our ollama's.
+    pub fn set_self_versions(&self, version: Option<String>, ollama: Option<String>) {
+        let mut g = self.inner.write().unwrap();
+        let me = g.get_mut(&self.self_id).unwrap();
+        me.version = version;
+        me.ollama_version = ollama;
+    }
+
     /// Set the name we show to peers. Travels with the next keepalive.
     pub fn set_self_name(&self, name: Option<String>) {
         let mut g = self.inner.write().unwrap();
@@ -456,6 +487,8 @@ impl DelegateTable {
                 }
                 // Names come from other machines and end up in terminals and menus.
                 e.name = e.name.as_deref().and_then(clean_name);
+                e.version = e.version.as_deref().and_then(clean_version);
+                e.ollama_version = e.ollama_version.as_deref().and_then(clean_version);
                 e.model_info = clean_model_info(std::mem::take(&mut e.model_info), &e.models);
                 if e.id != self.self_id {
                     // Too old to be alive, or forgotten and not heard from since.
@@ -662,6 +695,32 @@ mod tests {
             .cleaned();
             assert_eq!(m.digest, None, "{bad:?}");
         }
+    }
+
+    #[test]
+    fn versions_from_peers_are_cleaned() {
+        for (raw, want) in [
+            ("0.2.0", Some("0.2.0")),
+            ("v0.12.3", Some("0.12.3")),
+            ("1.0.0-rc.1+build.5", Some("1.0.0-rc.1+build.5")),
+            ("", None),
+            ("latest", None),
+            ("0.1 beta", None),
+            ("0.1\u{1b}[31m", None),
+        ] {
+            assert_eq!(clean_version(raw).as_deref(), want, "{raw:?}");
+        }
+        assert_eq!(clean_version(&"1".repeat(41)), None);
+        let t = table();
+        let mut e = entry("a", 10);
+        e.version = Some("v0.2.0".into());
+        e.ollama_version = Some("<script>".into());
+        t.merge([e]);
+        let p = &t.peers()[0];
+        assert_eq!(
+            (p.version.as_deref(), p.ollama_version.as_deref()),
+            (Some("0.2.0"), None)
+        );
     }
 
     #[test]

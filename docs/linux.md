@@ -132,6 +132,7 @@ grace period, and so on) are documented in the README's configuration table.
 | `~/.config/tokenshare/config.toml` | configuration |
 | `~/.local/share/tokenshare/id` | this delegate's random ID (do not copy it to another machine) |
 | `~/.local/share/tokenshare/table.json` | the saved list of other delegates |
+| `~/.local/share/tokenshare/ledger.json` | what this machine lent to and borrowed from each peer |
 
 ## Join other machines
 

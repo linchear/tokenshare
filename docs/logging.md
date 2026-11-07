@@ -75,7 +75,7 @@ scrape_configs:
 
 | Metric | Type | Labels | |
 | --- | --- | --- | --- |
-| `tokenshare_info` | gauge | `id`, `name`, `version` | always 1 |
+| `tokenshare_info` | gauge | `id`, `name`, `version`, `ollama_version` | always 1 |
 | `tokenshare_state` | gauge | `state` | 1 for the current state (`active`, `in-use`, `no-models`, `down`) |
 | `tokenshare_draining`, `tokenshare_sharing` | gauge | | 0 or 1 |
 | `tokenshare_auth_required` | gauge | | 1 if this delegate requires the pool secret |
@@ -86,7 +86,7 @@ scrape_configs:
 | `tokenshare_ollama_up`, `_models`, `_loaded_models` | gauge | `host` | per local ollama host |
 | `tokenshare_peers` | gauge | `status` | known peers by status |
 | `tokenshare_peer_up` | gauge | `peer`, `id` | 1 if online |
-| `tokenshare_peer_info` | gauge | `peer`, `id`, `name` | always 1; the peer's name, to join on `peer` |
+| `tokenshare_peer_info` | gauge | `peer`, `id`, `name`, `version`, `ollama_version` | always 1; the peer's name and versions, to join on `peer` or `id` |
 | `tokenshare_peer_models`, `_loaded_models`, `_slots`, `_slots_busy` | gauge | `peer` | as the peer last published them |
 | `tokenshare_peer_last_seen_timestamp_seconds` | gauge | `peer` | the peer's own clock |
 | `tokenshare_upstream_inflight` | gauge | `target` | this delegate's requests in flight per upstream |
@@ -96,6 +96,8 @@ scrape_configs:
 | `tokenshare_response_ttfb_seconds` | histogram | `route`, `target` | request to response headers |
 | `tokenshare_response_duration_seconds` | histogram | `route`, `target` | request to end of stream |
 | `tokenshare_tokens_total` | counter | `model`, `kind` | `prompt` and `completion` tokens from final chunks |
+| `tokenshare_lent_requests_total`, `tokenshare_borrowed_requests_total` | counter | `id` | requests served here for a peer, or by a peer for this machine ([lent and borrowed](how-it-works.md#lent-and-borrowed)); kept across restarts |
+| `tokenshare_lent_tokens_total`, `tokenshare_borrowed_tokens_total` | counter | `id`, `kind` | the same in `prompt` and `completion` tokens |
 
 `route` is `local`, `peer` or `passthrough`; `target` is an ollama host or a peer's
 URL. Counters start at zero when the delegate starts. Each delegate reports only
@@ -109,7 +111,11 @@ scrape it; with one, a scraper on another machine needs the secret (above).
 `http://<delegate>:11343/_ts/dashboard` is a page that polls `/_ts/status` every
 two seconds and shows the delegates with their slots and warm models, the local
 ollama hosts, and recent responses with how they ended. Hovering over a model
-shows its parameter size, quantization, size and digest. A model marked **≠** is
+shows its parameter size, quantization, size and digest. Under each delegate are
+the Token Share and ollama versions it runs; **older version** and **older
+ollama** mark one behind the newest in the pool. **Lent / borrowed** shows the
+tokens this machine served for each peer and the peer served for it, with the
+totals in a tile at the top. A model marked **≠** is
 one that delegates have in different builds (`differing_models` in
 `/_ts/status`), so the answer can depend on which machine serves it. A peer
 tagged **refuses our secret** answered one of this delegate's requests with 401

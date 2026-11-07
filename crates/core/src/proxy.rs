@@ -19,6 +19,7 @@ use tracing::{info, warn};
 use crate::activity::{Activity, Refusal, Rejection};
 use crate::auth::Secret;
 use crate::config::{Config, Face};
+use crate::ledger::{Direction, Ledger};
 use crate::mesh;
 use crate::ollama::{model_matches, peer_model_entry, LocalTable};
 use crate::pool::Pool;
@@ -90,6 +91,8 @@ pub struct AppState {
     pub pool: Pool,
     /// What this delegate has seen of its upstreams, for routing and the dashboard.
     pub activity: Arc<Activity>,
+    /// What this machine and each peer have served for each other.
+    pub ledger: Arc<Ledger>,
     pub client: reqwest::Client,
     /// The pool secret, if the pool uses one (see [`crate::auth`]).
     pub secret: Option<Secret>,
@@ -107,6 +110,9 @@ impl AppState {
             .connect_timeout(Duration::from_secs(5))
             .build()
             .expect("http client");
+        let ledger = Arc::new(Ledger::load(
+            data_dir.as_ref().map(|d| d.join("ledger.json")),
+        ));
         let delegates = DelegateTable::new(
             id.clone(),
             config.advertise_url.clone(),
@@ -124,6 +130,7 @@ impl AppState {
             table: LocalTable::new(&config.ollama_hosts),
             delegates,
             pool: Pool::with_peer_limit(config.pool_size, config.peer_slots()),
+            ledger,
             activity: Activity::new(),
             config,
             client,
@@ -184,6 +191,10 @@ impl AppState {
             .collect();
         let info = shared.iter().map(|m| m.meta()).collect();
         let models = shared.into_iter().map(|m| m.name).collect();
+        self.delegates.set_self_versions(
+            Some(env!("CARGO_PKG_VERSION").to_string()),
+            self.table.ollama_version(),
+        );
         self.delegates.update_self_with_info(models, info);
         self.publish_load();
     }
@@ -271,6 +282,7 @@ pub async fn poll_local_table(state: Arc<AppState>) {
     loop {
         tick.tick().await;
         state.refresh_local().await;
+        state.ledger.flush();
     }
 }
 
@@ -520,6 +532,7 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
         kind: Kind::Other,
         ttfb_ms: 0,
         activity: Some(s.activity.clone()),
+        ledger: None,
     };
     let out = Outbound {
         client: &s.client,
@@ -574,6 +587,12 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
     };
     let mut visited = visited_ids(&parts.headers);
     let forwarded = !visited.is_empty();
+    // A forwarded request is served for the delegate that sent it: the last
+    // one to handle it. Only a delegate we know is recorded in the ledger.
+    let lent_to = visited
+        .last()
+        .filter(|id| s.delegates.peers().iter().any(|p| &&p.id == id))
+        .cloned();
     if forwarded && !s.config.shares_models() {
         // A peer's view of us can be stale (it may still list our models), so
         // refuse here too. It treats this like any other busy peer and moves on.
@@ -646,7 +665,12 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
                                 resp,
                                 (permit, flight),
                                 s.cutoff.subscribe(),
-                                meta("local", host, Some(&model)),
+                                StreamMeta {
+                                    ledger: lent_to
+                                        .clone()
+                                        .map(|id| (s.ledger.clone(), id, Direction::Lent)),
+                                    ..meta("local", host, Some(&model))
+                                },
                             ),
                             &s.delegates.self_entry(),
                         )
@@ -689,7 +713,14 @@ async fn proxy(State(s): State<Arc<AppState>>, req: Request) -> Response {
                                 resp,
                                 (guard.take(), flight),
                                 s.cutoff.subscribe(),
-                                meta("peer", &peer.url, Some(&model)),
+                                StreamMeta {
+                                    ledger: Some((
+                                        s.ledger.clone(),
+                                        peer.id.clone(),
+                                        Direction::Borrowed,
+                                    )),
+                                    ..meta("peer", &peer.url, Some(&model))
+                                },
                             ),
                             &peer,
                         );

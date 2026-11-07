@@ -5,7 +5,8 @@ This is the long version of the [README](../README.md#how-it-works).
 ## The delegate table
 
 Every delegate keeps a table of all delegates: id, name, URL, status, models,
-load (slots, busy slots, models loaded in memory) and `last_seen`. It is persisted to disk, so a restarted delegate remembers its peers.
+load (slots, busy slots, models loaded in memory), the Token Share and ollama
+versions it runs, and `last_seen`. It is persisted to disk, so a restarted delegate remembers its peers.
 There is no coordinator. The *first contact* (`fc`) is just an ordinary delegate
 that a newcomer happens to ask first.
 
@@ -33,7 +34,22 @@ field as "not published" (an old peer without load information is ranked by what
 this delegate sees of it first-hand). The table hash covers only ids and URLs, so
 versions agree on it. `crates/core/tests/compat.rs` checks all of this against
 the v0.1.0 wire format; a change that breaks it should be listed in the
-[changelog](../CHANGELOG.md).
+[changelog](../CHANGELOG.md). Each delegate publishes its version, so the
+dashboard and `tokenshare delegates` show who is behind; one too old to publish
+it shows as an older version.
+
+### Lent and borrowed
+
+Each delegate keeps a tally per peer of what they did for each other: requests
+and tokens it **lent** (served from its ollama for a request the peer forwarded)
+and **borrowed** (a peer served for one of its users). Tokens are the counts from
+each response's final chunk, so a response without them (for example an
+OpenAI-style stream without `stream_options.include_usage`) counts as a request
+only. Only answers that succeeded count, and only for delegates in the table. It
+is saved to `ledger.json` next to the table, so it covers everything since the
+delegate first ran; delete the file to start over. It is each delegate's own
+view and is not shared or enforced. The dashboard, `/_ts/status` (`ledger`) and
+metrics show it.
 
 ## Routing
 

@@ -263,5 +263,6 @@ false`. On macOS they appear as Token Share's only when run from the app bundle,
 and the first one may ask for permission.
 
 `GET /_ts/status` returns the same picture as JSON: `name`, `state`, `draining`,
-`pool` (including `peer_limit` and `peer_in_use`), `shared_models`, local ollama
-hosts and the delegate table.
+`pool` (including `peer_limit` and `peer_in_use`), `shared_models`, `version` and
+`ollama_version`, local ollama hosts, the delegate table (each with its
+versions) and the `ledger` of lent and borrowed tokens.

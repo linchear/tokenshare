@@ -15,6 +15,8 @@ pub struct Row {
     pub status: String,
     pub models: Vec<String>,
     pub last_seen_ms: u64,
+    /// Empty if it does not say (it predates versions in gossip).
+    pub version: String,
 }
 
 pub struct Client {
@@ -81,6 +83,7 @@ impl Client {
                             })
                             .unwrap_or_default(),
                         last_seen_ms: d["last_seen"].as_u64().unwrap_or(0),
+                        version: d["version"].as_str().unwrap_or_default().to_string(),
                     })
                     .collect()
             })
@@ -174,8 +177,8 @@ pub fn format_table(me: &str, rows: &[Row], now_ms: u64) -> String {
         .unwrap_or(0)
         .clamp(4, 24);
     let mut out = format!(
-        "{:<9} {:<width$} {:<12} {:<10} {:<30} {}\n",
-        "ID", "NAME", "STATUS", "LAST SEEN", "URL", "MODELS"
+        "{:<9} {:<width$} {:<12} {:<9} {:<10} {:<30} {}\n",
+        "ID", "NAME", "STATUS", "VERSION", "LAST SEEN", "URL", "MODELS"
     );
     for r in rows {
         let models = if r.id == me {
@@ -186,11 +189,17 @@ pub fn format_table(me: &str, rows: &[Row], now_ms: u64) -> String {
             r.models.join(", ")
         };
         let name = if r.name.is_empty() { "-" } else { &r.name };
+        let version = if r.version.is_empty() {
+            "-"
+        } else {
+            &r.version
+        };
         out.push_str(&format!(
-            "{:<9} {:<width$} {:<12} {:<10} {:<30} {}\n",
+            "{:<9} {:<width$} {:<12} {:<9} {:<10} {:<30} {}\n",
             short(&r.id),
             name,
             r.status,
+            version,
             ago(r.last_seen_ms, now_ms),
             r.url,
             models
@@ -242,6 +251,7 @@ mod tests {
             status: "online".into(),
             models: vec![],
             last_seen_ms: 0,
+            version: String::new(),
         }
     }
 
@@ -326,12 +336,15 @@ mod tests {
         let mut r = rows();
         r[1].models = vec!["qwen3:14b".into()];
         r[1].name = "gpu-box".into();
+        r[1].version = "0.2.0".into();
         let now = 1_792_000_000_000u64;
         r[1].last_seen_ms = now - 30_000;
         r[3].last_seen_ms = now - 3 * 86_400_000;
         let t = format_table("83976b11-aaaa", &r, now);
         assert!(t.starts_with("ID "));
         assert!(t.contains(" NAME "));
+        assert!(t.contains(" VERSION "));
+        assert!(t.contains(" 0.2.0 "));
         assert!(t.contains("gpu-box"));
         assert!(t.contains(" -  "), "no name");
         assert!(t.contains("(this delegate)"));
