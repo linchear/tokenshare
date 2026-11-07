@@ -31,6 +31,7 @@ pool_size = 3
 | `keepalive_ttl` | `3` | Extra relay hops per keepalive |
 | `sync_interval_secs` | `60` | Full table pull period |
 | `shutdown_grace_secs` | `30` | How long to let in-flight requests finish on shutdown |
+| `prefer_warm_peers` | `false` | When a requested model is not loaded here but a peer has it loaded and room for it, send the request there instead of loading it here ([how it works](how-it-works.md#routing)). Under *Advanced* in Settings |
 | `queue_timeout_secs` | `30` | When every slot that could serve a request is busy, how long it waits for one before getting `503`; `0` answers `503` at once ([how it works](how-it-works.md#routing)) |
 | `peer_expiry_secs` | `86400` | Drop delegates not heard from for this long; `0` keeps them forever |
 
@@ -230,7 +231,9 @@ The icon is a round badge with a symbol, so state does not depend on color alone
 
 "Available" means a model listed by this machine's ollama or by an online peer; a
 reachable ollama with nothing installed does not count. The menu shows state, pool
-usage and the delegate list. Quit waits up to 5 seconds for in-flight requests. On
+usage and the delegate list. **Notifications** turns [notifications](#notifications)
+on or off at once (saved to the config file, no restart). Quit waits up to 5
+seconds for in-flight requests. On
 macOS, **Check for Updates…** looks for a new version and, when there is one,
 becomes **Install Token Share *x.y.z* and Restart** ([updates](packaging.md#updates)).
 
@@ -258,8 +261,8 @@ The tray app shows a desktop notification when:
 
 Delegates coming and going are not reported for the first minute after the
 delegate starts, while it rejoins the pool. Several at once are grouped into one
-notification. Turn them off with *Notify me…* in Settings or `notifications =
-false`. On macOS they appear as Token Share's only when run from the app bundle,
+notification. Turn them off with **Notifications** in the tray menu, *Notify me…*
+in Settings, or `notifications = false`. On macOS they appear as Token Share's only when run from the app bundle,
 and the first one may ask for permission.
 
 `GET /_ts/status` returns the same picture as JSON: `name`, `state`, `draining`,

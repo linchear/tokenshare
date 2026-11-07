@@ -68,6 +68,13 @@ this is called out below.
   tokens it served for the peer and the peer served for it, saved across restarts
   in `ledger.json`. Shown on the dashboard, in `/_ts/status` (`ledger`) and as
   `tokenshare_lent_*` and `tokenshare_borrowed_*` metrics.
+- **`prefer_warm_peers`** (off by default, under Advanced in Settings): a request
+  for a model that is not loaded here goes to a peer that has it loaded and has
+  room, instead of waiting for it to load here.
+- **Load a model ahead of time from the dashboard.** On the delegate's own
+  machine, clicking a model that is not loaded loads it on that machine or peer,
+  kept for 30 minutes.
+- **Notifications toggle in the tray menu**, saved at once without a restart.
 
 ### Changed
 

@@ -64,6 +64,10 @@ the request body, then:
    `shared_models`;
 2. otherwise tries online peers that have the model, best first (see below), moving
    on if a peer is full (503), errors, or is unreachable;
+   With `prefer_warm_peers` on, a request for a model that is **not loaded** here
+   first goes to a peer that has it loaded, has free slots and has not just
+   refused one, if there is such a peer; only if none takes it does it start here.
+   Off by default, since it uses peers to save this machine the load;
 3. otherwise, if somebody has the model but every slot is busy, **waits** for one,
    up to `queue_timeout_secs` (30 s by default). A freed local slot is taken at
    once; peers are asked again every 2 seconds, since they cannot say when they

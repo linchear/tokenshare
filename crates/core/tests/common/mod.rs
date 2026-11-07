@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::Json;
+use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Router;
 use futures_util::stream;
@@ -38,6 +39,8 @@ pub struct Mock {
     pub loaded: Arc<Mutex<Vec<String>>>,
     /// The `Authorization` header of each `/api/chat` request, in order.
     pub chat_auth: Arc<Mutex<Vec<Option<String>>>>,
+    /// Every request that only loaded a model (an empty prompt).
+    pub loads: Arc<Mutex<Vec<Value>>>,
 }
 
 impl Mock {
@@ -94,6 +97,9 @@ pub async fn mock_ollama(models: &[&str], chunk_delay_ms: u64) -> Mock {
     let chats2 = chats.clone();
     let loaded = Arc::new(Mutex::new(vec!["running-here".to_string()]));
     let loaded2 = loaded.clone();
+    let loaded3 = loaded.clone();
+    let loads = Arc::new(Mutex::new(vec![]));
+    let loads2 = loads.clone();
     let chat_auth = Arc::new(Mutex::new(vec![]));
     let chat_auth2 = chat_auth.clone();
     let app = Router::new()
@@ -144,7 +150,18 @@ pub async fn mock_ollama(models: &[&str], chunk_delay_ms: u64) -> Mock {
         )
         .route(
             "/api/generate",
-            post(|| async {
+            post(move |Json(req): Json<Value>| {
+                let loaded = loaded3.clone();
+                let loads = loads2.clone();
+                async move {
+                // An empty prompt only loads the model, as with ollama.
+                if req["prompt"] == "" {
+                    let model = req["model"].as_str().unwrap_or_default().to_string();
+                    loads.lock().unwrap().push(req.clone());
+                    loaded.lock().unwrap().push(model.clone());
+                    return Json(json!({"model": model, "done": true, "done_reason": "load"}))
+                        .into_response();
+                }
                 // Headers and one chunk go out, then the connection fails.
                 let s = stream::unfold(0, |i| async move {
                     match i {
@@ -156,7 +173,8 @@ pub async fn mock_ollama(models: &[&str], chunk_delay_ms: u64) -> Mock {
                         _ => None,
                     }
                 });
-                Body::from_stream(s)
+                Body::from_stream(s).into_response()
+                }
             }),
         )
         .route(
@@ -225,6 +243,7 @@ pub async fn mock_ollama(models: &[&str], chunk_delay_ms: u64) -> Mock {
         chats,
         loaded,
         chat_auth,
+        loads,
     }
 }
 
@@ -308,6 +327,8 @@ pub struct NodeOpts<'a> {
     /// `queue_timeout_secs`. 0 by default here, so a test of a busy pool gets
     /// its 503 at once; the tests of waiting set it.
     pub queue_timeout_secs: u64,
+    /// `prefer_warm_peers`.
+    pub prefer_warm_peers: bool,
 }
 
 impl Default for NodeOpts<'_> {
@@ -328,6 +349,7 @@ impl Default for NodeOpts<'_> {
             max_peer_requests: None,
             shared_models: &[],
             queue_timeout_secs: 0,
+            prefer_warm_peers: false,
         }
     }
 }
@@ -355,6 +377,7 @@ pub async fn node(opts: NodeOpts<'_>) -> Node {
         max_peer_requests: opts.max_peer_requests,
         shared_models: opts.shared_models.iter().map(|m| m.to_string()).collect(),
         queue_timeout_secs: opts.queue_timeout_secs,
+        prefer_warm_peers: opts.prefer_warm_peers,
         ..Config::default()
     };
     let state = AppState::new(opts.id.unwrap_or_else(uuid_like), config, opts.data_dir);

@@ -115,7 +115,17 @@ shows its parameter size, quantization, size and digest. Under each delegate are
 the Token Share and ollama versions it runs; **older version** and **older
 ollama** mark one behind the newest in the pool. **Lent / borrowed** shows the
 tokens this machine served for each peer and the peer served for it, with the
-totals in a tile at the top. A model marked **≠** is
+totals in a tile at the top.
+
+Opened on the delegate's own machine, the dashboard can also **load a model
+ahead of time**: click a model that is not loaded (on this machine, in the
+Local ollama table, or on an online peer) and it is loaded there with
+`keep_alive` of 30 minutes, so the first real request starts without waiting.
+On a peer it goes as a forwarded request, so the peer loads it only if it lends
+that model and has a free slot, and it counts as a lent request there. Like
+*Forget*, this answers only to this machine and to pages the delegate served
+(`POST /_ts/warm` with `{"model": "…", "id": "<delegate id>"}`; no `id` means
+this machine). A model marked **≠** is
 one that delegates have in different builds (`differing_models` in
 `/_ts/status`), so the answer can depend on which machine serves it. A peer
 tagged **refuses our secret** answered one of this delegate's requests with 401
