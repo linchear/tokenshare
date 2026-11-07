@@ -101,7 +101,10 @@ fn bearer(headers: &HeaderMap) -> Option<&[u8]> {
 /// Requests anyone may make: they reveal nothing about the pool.
 fn is_open(method: &Method, path: &str) -> bool {
     (method == Method::GET || method == Method::HEAD)
-        && matches!(path, "/" | "/api/version" | "/_ts/dashboard")
+        && matches!(
+            path,
+            "/" | "/api/version" | "/_ts/dashboard" | "/favicon.ico"
+        )
 }
 
 /// Middleware on every listener: let the request through or answer 401.
@@ -197,6 +200,7 @@ mod tests {
         assert!(is_open(&Method::HEAD, "/"));
         assert!(is_open(&Method::GET, "/api/version"));
         assert!(is_open(&Method::GET, "/_ts/dashboard"));
+        assert!(is_open(&Method::GET, "/favicon.ico"));
         for (m, p) in [
             (Method::GET, "/_ts/status"),
             (Method::GET, "/_ts/metrics"),

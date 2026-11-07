@@ -243,6 +243,9 @@ pub fn router_for(state: Arc<AppState>, face: Face) -> Router {
         .route("/_ts/table", get(mesh::table))
         .route("/_ts/forget", post(mesh::forget))
         .route("/_ts/warm", post(crate::warmup::warm))
+        // Browsers ask for it on their own; it is not ollama's business, and
+        // it is not a response worth listing.
+        .route("/favicon.ico", get(|| async { StatusCode::NO_CONTENT }))
         .fallback(proxy)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
