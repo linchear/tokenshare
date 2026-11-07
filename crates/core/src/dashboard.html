@@ -106,6 +106,7 @@
       <span class="chip warm">warm</span> models are loaded in memory and start without a load.
       The request columns are this delegate's own traffic to that peer; a peer that just refused a request
       is <span class="tag cool">cooling</span> and gets tried after the others for a few seconds.
+      <b>Lent / borrowed</b> counts tokens this machine served for a peer, and a peer served for it, since the date in the tile above.
       <span id="differ-help"></span>
       <span id="forget-help"></span>
     </div>
@@ -142,12 +143,39 @@ function dur(ms) {
   if (ms == null) return "–";
   return ms < 1000 ? ms + " ms" : (ms / 1000).toFixed(ms < 10000 ? 2 : 1) + " s";
 }
+function count(n) {
+  n = n || 0;
+  if (n < 1000) return String(n);
+  const [d, u] = n < 1e6 ? [1e3, "k"] : n < 1e9 ? [1e6, "M"] : [1e9, "B"];
+  const v = n / d;
+  return (v < 10 ? v.toFixed(1).replace(/\.0$/, "") : Math.round(v)) + u;
+}
+function side(t) {
+  t = t || {};
+  return `${(t.requests || 0).toLocaleString()} requests, ${(t.prompt_tokens || 0).toLocaleString()} prompt + ${(t.completion_tokens || 0).toLocaleString()} completion tokens`;
+}
+function tokens(t) { return (t ? (t.prompt_tokens || 0) + (t.completion_tokens || 0) : 0); }
 function time(ms) {
   return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 function short(id) { return String(id || "").slice(0, 8); }
 // What to call a delegate: its name, else its address.
 function who(d) { return d ? d.name || host(d.url) : "–"; }
+// Compares release versions ("0.10.2" > "0.9.7"); a pre-release sorts first.
+function cmpVersion(a, b) {
+  const parse = (v) => {
+    const [core, pre] = String(v).split("+")[0].split(/-(.*)/);
+    return { nums: core.split(".").map((n) => parseInt(n, 10) || 0), pre: pre || "" };
+  };
+  const x = parse(a), y = parse(b);
+  for (let i = 0; i < Math.max(x.nums.length, y.nums.length); i++) {
+    const d = (x.nums[i] || 0) - (y.nums[i] || 0);
+    if (d) return d;
+  }
+  if (x.pre === y.pre) return 0;
+  return !x.pre ? 1 : !y.pre ? -1 : x.pre < y.pre ? -1 : 1;
+}
+function newest(vs) { return vs.filter(Boolean).reduce((m, v) => (m && cmpVersion(m, v) >= 0 ? m : v), null); }
 function host(url) { try { return new URL(url).host; } catch { return url || "–"; } }
 function matches(req, avail) { return req === avail || (!req.includes(":") && avail === req + ":latest"); }
 function pill(state, label) {
@@ -194,6 +222,7 @@ function tile(label, value, sub) {
 
 function render(s) {
   const act = s.activity || { targets: [], recent: [], rejected: {} };
+  const ledger = s.ledger || {};
   const now = act.now || Date.now();
   const byTarget = Object.fromEntries((act.targets || []).map((t) => [t.target, t]));
   const delegates = s.delegates || [];
@@ -227,6 +256,10 @@ function render(s) {
     tile("Delegates online", `${online.length + 1} / ${peers.length + 1}`, "including this one"),
     tile("Models in the pool", pool.size, `${warm.size} warm`),
     tile("Recent problems", `<span class="${problems ? "warn" : ""}">${problems}</span>`, `of the last ${recent.length} responses`),
+    tile("Tokens lent / borrowed",
+      `<span title="${esc("Lent: " + side(ledger.totals && ledger.totals.lent))}">${count(tokens(ledger.totals && ledger.totals.lent))}</span> / `
+        + `<span title="${esc("Borrowed: " + side(ledger.totals && ledger.totals.borrowed))}">${count(tokens(ledger.totals && ledger.totals.borrowed))}</span>`,
+      ledger.since ? "since " + new Date(ledger.since).toLocaleDateString() : ""),
     tile("Turned away", (rej.busy || 0) + (rej.not_found || 0) + denied,
       `${rej.busy || 0} busy · ${rej.not_found || 0} unknown model` + (s.auth || denied ? ` · ${denied} without the secret` : "")),
   ].join("");
@@ -240,6 +273,12 @@ function render(s) {
   (s.ollama || []).filter((h) => h.up).forEach((h) => h.models.forEach((m) => local.add(m)));
   const kept = s.sharing && self ? [...local].filter((m) => !(self.models || []).includes(m)).length : 0;
   const refusing = new Set(act.secret_refused || []);
+  // Who is behind on Token Share or ollama, among this delegate and online peers.
+  const current = [...(self ? [self] : []), ...online];
+  const latest = newest(current.map((d) => d.version));
+  const latestOllama = newest(current.map((d) => d.ollama_version));
+  const behind = (d) => latest && (!d.version || cmpVersion(d.version, latest) < 0);
+  const ollamaBehind = (d) => latestOllama && d.ollama_version && cmpVersion(d.ollama_version, latestOllama) < 0;
   const differing = s.differing_models || [];
   const differ = new Set(differing.map((x) => x.model));
   $("differ-help").textContent = differing.length
@@ -252,6 +291,7 @@ function render(s) {
     : "";
   $("delegates").innerHTML = `<thead><tr>
       <th>Delegate</th><th>Status</th><th>Slots</th><th>Models</th><th>Last seen</th>
+      <th class="num" title="Tokens this machine served for the peer / the peer served for this machine">Lent / borrowed</th>
       <th class="num">In flight</th><th class="num">OK</th><th class="num">Problems</th>
       <th class="num">Refused</th><th class="num">Avg first byte</th>${manage ? "<th></th>" : ""}</tr></thead><tbody>` +
     (rows.length ? rows.map((d) => {
@@ -260,20 +300,24 @@ function render(s) {
       const refused = (t.declined || 0) + (t.unreachable || 0);
       const limited = me && s.sharing && s.pool.peer_limit != null && s.pool.peer_limit < s.pool.size;
       return `<tr>
-        <td><div>${d.name ? `<span class="name">${esc(d.name)}</span>` : `<span class="mono">${esc(host(d.url))}</span>`}${me ? '<span class="tag">this delegate</span>' : ""}${t.cooling ? '<span class="tag cool">cooling</span>' : ""}${refusing.has(d.url) ? '<span class="tag bad" title="It answered 401: it needs the pool secret, or this machine\'s does not match">refuses our secret</span>' : ""}</div>
-            <div class="muted mono">${d.name ? esc(host(d.url)) + " · " : ""}${esc(short(d.id))}</div></td>
+        <td><div>${d.name ? `<span class="name">${esc(d.name)}</span>` : `<span class="mono">${esc(host(d.url))}</span>`}${me ? '<span class="tag">this delegate</span>' : ""}${t.cooling ? '<span class="tag cool">cooling</span>' : ""}${refusing.has(d.url) ? '<span class="tag bad" title="It answered 401: it needs the pool secret, or this machine\'s does not match">refuses our secret</span>' : ""}${behind(d) ? `<span class="tag cool" title="${d.version ? `Token Share ${esc(latest)} is the newest in the pool` : "Too old to report its version"}">older version</span>` : ""}${ollamaBehind(d) ? `<span class="tag" title="ollama ${esc(latestOllama)} is the newest in the pool; newer models can need a newer ollama">older ollama</span>` : ""}</div>
+            <div class="muted mono">${d.name ? esc(host(d.url)) + " · " : ""}${esc(short(d.id))}${d.version ? " · v" + esc(d.version) : ""}${d.ollama_version ? " · ollama " + esc(d.ollama_version) : ""}</div></td>
         <td>${pill(d.status)}</td>
         <td>${me ? meter(s.pool.in_use, s.sharing ? s.pool.size : null) : meter(d.busy, d.slots)}${limited
           ? `<div class="muted" title="max_peer_requests">peers ≤ ${s.pool.peer_limit}</div>` : ""}</td>
         <td>${chips(d.models, d.loaded, d.model_info, differ)}${me && kept ? `<div class="muted" title="shared_models">${kept} more not shared</div>` : ""}</td>
         <td class="muted">${me ? "now" : ago(now - d.last_seen)}</td>
+        <td class="num">${me ? "–" : (() => {
+          const b = (ledger.peers || {})[d.id];
+          return b ? `<span title="${esc("Lent: " + side(b.lent) + "\nBorrowed: " + side(b.borrowed))}">${count(tokens(b.lent))} / ${count(tokens(b.borrowed))}</span>` : '<span class="muted">0 / 0</span>';
+        })()}</td>
         <td class="num">${me ? "–" : t.inflight ?? 0}</td>
         <td class="num">${me ? "–" : t.ok ?? 0}</td>
         <td class="num ${t.problems ? "warn" : ""}">${me ? "–" : t.problems ?? 0}</td>
         <td class="num ${refused ? "warn" : ""}" title="${t.declined || 0} declined, ${t.unreachable || 0} unreachable">${me ? "–" : refused}</td>
         <td class="num">${me ? "–" : dur(t.ttfb_ms_avg)}</td>${manage ? `<td>${me ? ""
           : `<button class="act" data-forget="${esc(d.id)}" data-who="${esc(who(d))}" data-status="${esc(d.status)}">Forget</button>`}</td>` : ""}</tr>`;
-    }).join("") : '<tr><td colspan="11" class="empty">This delegate does not know its own address yet; it learns it when it joins or is joined.</td></tr>') +
+    }).join("") : '<tr><td colspan="12" class="empty">This delegate does not know its own address yet; it learns it when it joins or is joined.</td></tr>') +
     "</tbody>";
 
   // Local ollama hosts.

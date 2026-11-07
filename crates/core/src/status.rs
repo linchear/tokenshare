@@ -89,6 +89,7 @@ pub fn status_json(s: &AppState) -> Value {
                 "up": h.up,
                 "models": h.models.iter().map(|m| &m.name).collect::<Vec<_>>(),
                 "loaded": h.loaded,
+                "version": h.version,
             })
         })
         .collect();
@@ -114,9 +115,15 @@ pub fn status_json(s: &AppState) -> Value {
         "shared_models": s.config.shared_models,
         "ollama": hosts,
         "version": env!("CARGO_PKG_VERSION"),
+        "ollama_version": s.table.ollama_version(),
         "differing_models": differing_models(&s.delegates.shared_entries()),
         "delegates": s.delegates.shared_entries(),
         "activity": s.activity.snapshot(),
+        "ledger": {
+            "since": s.ledger.since(),
+            "totals": s.ledger.totals(),
+            "peers": s.ledger.balances(),
+        },
     })
 }
 

@@ -74,6 +74,10 @@ pub fn render(s: &AppState) -> String {
             ("id", &s.id),
             ("name", &name),
             ("version", env!("CARGO_PKG_VERSION")),
+            (
+                "ollama_version",
+                &s.table.ollama_version().unwrap_or_default(),
+            ),
         ],
         1,
     );
@@ -218,7 +222,7 @@ pub fn render(s: &AppState) -> String {
     m.family(
         "tokenshare_peer_info",
         "gauge",
-        "Always 1; labels give the peer's name, which can change and need not be unique.",
+        "Always 1; labels give the peer's name (which can change and need not be unique) and the versions it runs.",
     );
     for p in &peers {
         m.sample(
@@ -227,6 +231,11 @@ pub fn render(s: &AppState) -> String {
                 ("peer", &p.url),
                 ("id", &p.id),
                 ("name", p.name.as_deref().unwrap_or_default()),
+                ("version", p.version.as_deref().unwrap_or_default()),
+                (
+                    "ollama_version",
+                    p.ollama_version.as_deref().unwrap_or_default(),
+                ),
             ],
             1,
         );
@@ -293,7 +302,47 @@ pub fn render(s: &AppState) -> String {
     }
 
     s.activity.write_metrics(&mut m);
+    write_ledger(s, &mut m);
     m.finish()
+}
+
+/// Lent and borrowed requests and tokens per peer (by id; join on
+/// `tokenshare_peer_info`). Kept across restarts, so they only ever grow.
+fn write_ledger(s: &AppState, m: &mut Exposition) {
+    use crate::ledger::Balance;
+    let balances = s.ledger.balances();
+    type Side = fn(&Balance) -> &crate::ledger::Tally;
+    let sides: [(&str, &str, Side); 2] = [
+        ("lent", "served here for the peer", |b| &b.lent),
+        ("borrowed", "served by the peer for this machine", |b| {
+            &b.borrowed
+        }),
+    ];
+    for (dir, what, side) in sides {
+        let name = format!("tokenshare_{dir}_requests_total");
+        m.family(&name, "counter", &format!("Requests {what}, by peer id."));
+        for (id, b) in &balances {
+            m.sample(&name, &[("id", id)], side(b).requests);
+        }
+        let name = format!("tokenshare_{dir}_tokens_total");
+        m.family(
+            &name,
+            "counter",
+            &format!("Tokens {what}, by peer id and kind (prompt or completion)."),
+        );
+        for (id, b) in &balances {
+            m.sample(
+                &name,
+                &[("id", id), ("kind", "prompt")],
+                side(b).prompt_tokens,
+            );
+            m.sample(
+                &name,
+                &[("id", id), ("kind", "completion")],
+                side(b).completion_tokens,
+            );
+        }
+    }
 }
 
 #[cfg(test)]

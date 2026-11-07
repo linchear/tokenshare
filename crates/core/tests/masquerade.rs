@@ -81,7 +81,7 @@ async fn the_tokenshare_port_acts_as_a_delegate_with_no_models() {
         .json()
         .await
         .unwrap();
-    assert_ne!(version["version"], "mock");
+    assert_ne!(version["version"], common::MOCK_OLLAMA_VERSION);
     assert!(version["version"].as_str().is_some_and(|v| !v.is_empty()));
     // ...while the ollama port passes the call through to the local ollama.
     let version: serde_json::Value = reqwest::get(format!("{}/api/version", m.ollama))
@@ -90,7 +90,7 @@ async fn the_tokenshare_port_acts_as_a_delegate_with_no_models() {
         .json()
         .await
         .unwrap();
-    assert_eq!(version["version"], "mock");
+    assert_eq!(version["version"], common::MOCK_OLLAMA_VERSION);
 }
 
 #[tokio::test]

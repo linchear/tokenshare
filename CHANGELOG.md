@@ -60,6 +60,14 @@ this is called out below.
   not signed with the project's key. `check_for_updates = false` or Settings turns
   the daily check off. Releases attach `latest.json` and a signed
   `.app.tar.gz` for it.
+- **Versions in gossip.** Delegates publish the Token Share and ollama versions
+  they run. The dashboard shows them and marks a delegate behind the rest of the
+  pool; `tokenshare delegates` has a VERSION column, and `tokenshare_info` and
+  `tokenshare_peer_info` carry them.
+- **Lent and borrowed tokens.** Each delegate tallies, per peer, the requests and
+  tokens it served for the peer and the peer served for it, saved across restarts
+  in `ledger.json`. Shown on the dashboard, in `/_ts/status` (`ledger`) and as
+  `tokenshare_lent_*` and `tokenshare_borrowed_*` metrics.
 
 ### Changed
 

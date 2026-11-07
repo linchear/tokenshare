@@ -151,6 +151,13 @@ pub struct StreamMeta {
     pub ttfb_ms: u64,
     /// Where the finished response is recorded for routing and the dashboard.
     pub activity: Option<std::sync::Arc<crate::activity::Activity>>,
+    /// For a response served for a peer, or by one: the ledger, the peer's
+    /// id and which way it went.
+    pub ledger: Option<(
+        std::sync::Arc<crate::ledger::Ledger>,
+        String,
+        crate::ledger::Direction,
+    )>,
 }
 
 /// Follows one response as it streams and logs how it ended. The log line is
@@ -256,6 +263,12 @@ impl Drop for StreamTracker {
                 prompt_tokens: info.prompt_tokens,
                 completion_tokens: info.completion_tokens,
             });
+        }
+        // Only answers the peer (or our user) actually got count.
+        if let Some((ledger, peer, direction)) = &m.ledger {
+            if (200..300).contains(&m.status) {
+                ledger.record(peer, *direction, info.prompt_tokens, info.completion_tokens);
+            }
         }
     }
 }
@@ -385,6 +398,7 @@ mod tests {
             kind: Kind::Sse,
             ttfb_ms: 0,
             activity: None,
+            ledger: None,
         });
         for _ in 0..100 {
             t.feed(&[b'x'; 1000]);

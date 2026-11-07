@@ -187,6 +187,11 @@ async fn a_new_delegate_joins_an_old_one_gossips_and_borrows_its_models() {
     assert_eq!((seen[0].slots, seen[0].busy), (None, None));
     assert!(seen[0].loaded.is_empty());
     assert_eq!(seen[0].name, None, "nor a name");
+    assert_eq!(
+        (&seen[0].version, &seen[0].ollama_version),
+        (&None, &None),
+        "nor versions"
+    );
 
     // Its keepalive, load fields and all, parses as v0.1.0's keepalive.
     assert!(send_keepalive(&new.state).await);
@@ -255,6 +260,7 @@ async fn an_old_delegate_can_join_a_new_one_and_read_its_table() {
     assert!(mine["slots"].is_number(), "the new fields are really there");
     assert_eq!(mine["name"], "new-one");
     assert_eq!(mine["model_info"][0]["name"], "gemma2:latest");
+    assert_eq!(mine["version"], env!("CARGO_PKG_VERSION"));
     let table: OldTable = serde_json::from_value(raw).expect("v0.1.0 can parse the table");
     assert_eq!(table.count, 2);
     // Both versions hash the same table the same way, so announces do not

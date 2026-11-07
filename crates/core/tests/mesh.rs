@@ -840,7 +840,8 @@ async fn the_mesh_port_of_a_masquerading_delegate_also_answers_what_clients_chec
         .await
         .unwrap();
     assert_ne!(
-        v["version"], "mock",
+        v["version"],
+        common::MOCK_OLLAMA_VERSION,
         "direct clients on the mesh port do not get the local ollama"
     );
     assert!(v["version"].as_str().is_some_and(|s| !s.is_empty()));

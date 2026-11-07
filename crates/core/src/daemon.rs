@@ -151,6 +151,8 @@ impl Running {
                 Err(_) => server.abort(),
             }
         }
+        // After the last response has been counted.
+        self.state.ledger.flush();
         Ok(())
     }
 

@@ -108,7 +108,7 @@ async fn names_travel_with_joins_tables_and_keepalives() {
         .unwrap();
     assert!(metrics.contains("name=\"gpu-box\""), "{metrics}");
     assert!(metrics.contains(&format!(
-        "tokenshare_peer_info{{peer=\"{}\",id=\"{}\",name=\"den\"}} 1",
+        "tokenshare_peer_info{{peer=\"{}\",id=\"{}\",name=\"den\",",
         b.url, b.state.id
     )));
 }
@@ -291,4 +291,130 @@ async fn responses_say_which_machine_served_them() {
     let r = chat(&c.url, "nobody-has-this").await;
     assert_eq!(r.status(), StatusCode::NOT_FOUND);
     assert!(r.headers().get(SERVED_BY_HEADER).is_none());
+}
+
+#[tokio::test]
+async fn versions_travel_with_joins_and_tables() {
+    let a = node(NodeOpts {
+        models: &["gemma2:latest"],
+        name: Some("gpu-box"),
+        ..Default::default()
+    })
+    .await;
+    let c = client_of(&a).await;
+    let ours = env!("CARGO_PKG_VERSION");
+
+    // C learned A's versions from the join reply...
+    let seen = &c.state.delegates.peers()[0];
+    assert_eq!(seen.version.as_deref(), Some(ours));
+    assert_eq!(
+        seen.ollama_version.as_deref(),
+        Some(common::MOCK_OLLAMA_VERSION)
+    );
+    // ...and A learned C's from the join: no ollama, so no ollama version.
+    eventually(3, "A to list C", || a.state.delegates.peers().len() == 1).await;
+    let c_seen = &a.state.delegates.peers()[0];
+    assert_eq!(c_seen.version.as_deref(), Some(ours));
+    assert_eq!(c_seen.ollama_version, None);
+
+    let s = status(&a.url).await;
+    assert_eq!(s["ollama_version"], common::MOCK_OLLAMA_VERSION);
+    assert_eq!(s["ollama"][0]["version"], common::MOCK_OLLAMA_VERSION);
+    let metrics = reqwest::get(format!("{}/_ts/metrics", c.url))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        metrics.contains(&format!(
+            "name=\"gpu-box\",version=\"{ours}\",ollama_version=\"{}\"}} 1",
+            common::MOCK_OLLAMA_VERSION
+        )),
+        "{metrics}"
+    );
+}
+
+#[tokio::test]
+async fn lending_and_borrowing_are_tallied_on_both_sides() {
+    use common::{MOCK_COMPLETION_TOKENS, MOCK_PROMPT_TOKENS};
+    let dir = std::env::temp_dir().join(format!("ts-ledger-{}", uuid_like()));
+    let a = node(NodeOpts {
+        models: &["gemma2:latest"],
+        data_dir: Some(dir.clone()),
+        ..Default::default()
+    })
+    .await;
+    let c = client_of(&a).await;
+    eventually(3, "A to list C", || a.state.delegates.peers().len() == 1).await;
+    for _ in 0..2 {
+        let r = chat(&c.url, "gemma2").await;
+        assert_eq!(r.status(), StatusCode::OK);
+        r.text().await.unwrap();
+    }
+    // A's own user: nobody lent or borrowed anything.
+    chat(&a.url, "gemma2").await.text().await.unwrap();
+    let per_request = MOCK_PROMPT_TOKENS + MOCK_COMPLETION_TOKENS;
+
+    eventually(3, "both sides to count", || {
+        a.state.ledger.totals().lent.requests == 2 && c.state.ledger.totals().borrowed.requests == 2
+    })
+    .await;
+    let lent = a.state.ledger.balances()[&c.state.id].lent;
+    assert_eq!(lent.tokens(), 2 * per_request);
+    assert_eq!(lent.prompt_tokens, 2 * MOCK_PROMPT_TOKENS);
+    let borrowed = c.state.ledger.balances()[&a.state.id].borrowed;
+    assert_eq!(borrowed.tokens(), 2 * per_request);
+    assert_eq!(a.state.ledger.totals().borrowed.requests, 0);
+
+    let s = status(&c.url).await;
+    assert_eq!(s["ledger"]["totals"]["borrowed"]["requests"], 2);
+    assert_eq!(
+        s["ledger"]["peers"][&a.state.id]["borrowed"]["completion_tokens"],
+        2 * MOCK_COMPLETION_TOKENS
+    );
+    let metrics = reqwest::get(format!("{}/_ts/metrics", a.url))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(metrics.contains(&format!(
+        "tokenshare_lent_requests_total{{id=\"{}\"}} 2\n",
+        c.state.id
+    )));
+    assert!(metrics.contains(&format!(
+        "tokenshare_lent_tokens_total{{id=\"{}\",kind=\"completion\"}} {}\n",
+        c.state.id,
+        2 * MOCK_COMPLETION_TOKENS
+    )));
+
+    // Saved with the table, and read back by the next start.
+    a.state.ledger.flush();
+    let again = tokenshare_core::ledger::Ledger::load(Some(dir.join("ledger.json")));
+    assert_eq!(again.balances()[&c.state.id].lent.requests, 2);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a_forwarded_request_from_a_stranger_is_not_tallied() {
+    let a = node(NodeOpts {
+        models: &["gemma2:latest"],
+        ..Default::default()
+    })
+    .await;
+    let r = forwarded_chat(&a.url, "gemma2").await;
+    assert_eq!(r.status(), StatusCode::OK);
+    r.text().await.unwrap();
+    assert!(a.state.ledger.balances().is_empty());
+}
+
+fn uuid_like() -> String {
+    format!(
+        "{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    )
 }

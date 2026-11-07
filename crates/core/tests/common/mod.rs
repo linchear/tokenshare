@@ -50,6 +50,13 @@ impl Mock {
     }
 }
 
+/// Token counts in the final chunk of every mock `/api/chat` response.
+pub const MOCK_PROMPT_TOKENS: u64 = 7;
+pub const MOCK_COMPLETION_TOKENS: u64 = 11;
+
+/// What the mock ollama's `/api/version` says.
+pub const MOCK_OLLAMA_VERSION: &str = "0.9.7";
+
 /// What the mock's `/api/tags` says about `model`: a size, details, and a
 /// digest made from the name, or from `name#build` to fake another build.
 pub fn mock_tags_entry(model: &str) -> Value {
@@ -119,10 +126,15 @@ pub async fn mock_ollama(models: &[&str], chunk_delay_ms: u64) -> Mock {
                                 return None;
                             }
                             tokio::time::sleep(Duration::from_millis(chunk_delay_ms)).await;
-                            let line = format!(
-                                "{}\n",
-                                json!({"model": model, "chunk": i, "done": i == 2})
-                            );
+                            // The last chunk reports token counts, as ollama's does.
+                            let chunk = if i == 2 {
+                                json!({"model": model, "chunk": i, "done": true,
+                                       "prompt_eval_count": MOCK_PROMPT_TOKENS,
+                                       "eval_count": MOCK_COMPLETION_TOKENS})
+                            } else {
+                                json!({"model": model, "chunk": i, "done": false})
+                            };
+                            let line = format!("{chunk}\n");
                             Some((Ok::<_, std::io::Error>(line), (i + 1, flag)))
                         }
                     });
@@ -149,7 +161,7 @@ pub async fn mock_ollama(models: &[&str], chunk_delay_ms: u64) -> Mock {
         )
         .route(
             "/api/version",
-            get(|| async { Json(json!({"version": "mock"})) }),
+            get(|| async { Json(json!({ "version": MOCK_OLLAMA_VERSION })) }),
         )
         // What `ollama run` asks first: model details, including capabilities.
         .route(

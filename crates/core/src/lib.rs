@@ -2,6 +2,7 @@ pub mod activity;
 pub mod auth;
 pub mod config;
 pub mod daemon;
+pub mod ledger;
 pub mod mesh;
 pub mod metrics;
 pub mod ollama;

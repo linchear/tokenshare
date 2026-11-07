@@ -89,7 +89,7 @@ async fn non_inference_paths_pass_through() {
         .json()
         .await
         .unwrap();
-    assert_eq!(body["version"], "mock");
+    assert_eq!(body["version"], common::MOCK_OLLAMA_VERSION);
 }
 
 #[tokio::test]
